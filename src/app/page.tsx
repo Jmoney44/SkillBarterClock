@@ -1,40 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import type { ReactNode } from "react";
+import { initialSessions, ledger, people } from "./data";
+import type { Session } from "./data";
 
 type View = "home" | "explore" | "sessions" | "wallet" | "room" | "profile" | "teacher";
-type SessionStatus = "Confirmed" | "Awaiting confirmation" | "Completed";
-
-type Session = {
-  id: number;
-  name: string;
-  skill: string;
-  date: string;
-  time: string;
-  duration: number;
-  status: SessionStatus;
-  image: string;
-};
-
-const people = [
-  { name: "Amaka Okafor", skill: "Yoruba · Intermediate", rating: "4.98", hours: "42 hours taught", swap: "Excel, public speaking", category: "Languages", image: "photo-1534528741775-53994a69daeb" },
-  { name: "Tunde Adebayo", skill: "Excel · Advanced", rating: "4.95", hours: "86 hours taught", swap: "Yoruba, guitar", category: "Tech & office", image: "photo-1500648767791-00dcc994a43e" },
-  { name: "Chinwe Nwosu", skill: "Brand design · Advanced", rating: "5.0", hours: "31 hours taught", swap: "French, baking", category: "Creative", image: "photo-1531123897727-8f129e1688ce" },
-];
-
-const initialSessions: Session[] = [
-  { id: 1, name: "Amaka Okafor", skill: "Yoruba conversation", date: "Today, Oct 20", time: "4:30 PM", duration: 1.5, status: "Confirmed", image: people[0].image },
-  { id: 2, name: "David Chen", skill: "Portfolio review", date: "Wed, Oct 22", time: "11:00 AM", duration: 1, status: "Confirmed", image: "photo-1506794778202-cad84cf45f1d" },
-  { id: 3, name: "Fatima Bello", skill: "Excel for beginners", date: "Oct 18", time: "2:00 PM", duration: 1, status: "Awaiting confirmation", image: "photo-1544005313-94ddf0286df2" },
-];
-
-const ledger = [
-  { title: "Starter credits", detail: "Profile completion bonus", date: "Oct 16, 2026", amount: "+2.0", kind: "plus" },
-  { title: "Taught Canva basics", detail: "with Nneka Eze", date: "Oct 17, 2026", amount: "+1.5", kind: "plus" },
-  { title: "Yoruba conversation", detail: "Held for Amaka Okafor", date: "Oct 20, 2026", amount: "−1.5", kind: "hold" },
-  { title: "Taught Excel formulas", detail: "with Musa Ibrahim", date: "Oct 14, 2026", amount: "+2.0", kind: "plus" },
-];
 
 function Icon({ name, size = 19 }: { name: string; size?: number }) {
   const common = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true as const };
@@ -148,7 +120,7 @@ export default function Home() {
         </button>
         <div className="side-label">YOUR SPACE</div>
         <nav className="side-nav" aria-label="Main navigation">
-          {([["home", "grid", "Overview"], ["explore", "search", "Explore skills"], ["sessions", "calendar", "My sessions"], ["wallet", "wallet", "Time wallet"], ["profile", "message", "Messages"]] as [View, string, string][]).map(([key, icon, label]) => (
+          {([["home", "grid", "Overview"], ["explore", "search", "Explore skills"], ["sessions", "calendar", "My sessions"], ["wallet", "wallet", "Time wallet"], ["profile", "message", "Profile"]] as [View, string, string][]).map(([key, icon, label]) => (
             <button key={key} className={`nav-item ${view === key ? "active" : ""}`} onClick={() => setView(key)}><Icon name={icon} /><span>{label}</span>{key === "profile" && <span className="nav-count">2</span>}</button>
           ))}
         </nav>
@@ -173,7 +145,7 @@ export default function Home() {
 
         <div className="content-wrap">
           {view === "home" && <>
-            <div className="welcome-row"><div><div className="eyebrow">TUESDAY, OCTOBER 20, 2026 <span className="eyebrow-dot" /></div><h1>Good afternoon, Maya<span className="wave">.</span></h1><p className="lead">A little time shared goes a long way.</p></div><button className="button button-primary" onClick={() => startBooking()}><Icon name="plus" size={17} /> Book a session</button></div>
+            <div className="welcome-row"><div><div className="eyebrow">TUESDAY, OCTOBER 20, 2026 <span className="eyebrow-dot" /></div><h1>Good afternoon, Maya<span className="wave">.</span></h1><p className="lead">A little time shared goes a long way.</p></div><div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}><Link className="button button-secondary" href="/onboarding">Complete onboarding</Link><button className="button button-primary" onClick={() => startBooking()}><Icon name="plus" size={17} /> Book a session</button></div></div>
 
             <section className="hero-panel">
               <div className="hero-copy"><div className="hero-kicker"><span className="live-dot" /> YOUR NEXT HOUR STARTS HERE</div><h2>Teach what you know.<br /><em>Learn what you love.</em></h2><p>Every hour you share brings another skill within reach. No money. Just time, exchanged fairly.</p><button className="hero-button" onClick={() => setView("explore")}>Find your next skill <Icon name="arrow" size={17} /></button><div className="hero-people"><div className="avatar-stack"><Avatar image={people[0].image} name={people[0].name} size="sm" /><Avatar image={people[1].image} name={people[1].name} size="sm" /><Avatar image={people[2].image} name={people[2].name} size="sm" /></div><span><b>2,400+</b> neighbors learning together</span></div></div>

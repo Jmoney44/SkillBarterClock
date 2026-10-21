@@ -1,0 +1,43 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Scaffold Skill Barter Clock",
+			"type": "shell",
+			"command": "npx.cmd",
+			"args": [
+				"--yes",
+				"create-next-app@latest",
+				"skill-barter-clock",
+				"--ts",
+				"--tailwind",
+				"--eslint",
+				"--app",
+				"--src-dir",
+				"--use-npm"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Move scaffold to workspace root",
+			"type": "shell",
+			"command": "Get-ChildItem",
+			"args": [
+				"-LiteralPath",
+				".\\skill-barter-clock",
+				"-Force",
+				"|",
+				"Move-Item",
+				"-Destination",
+				".",
+				";",
+				"Remove-Item",
+				"-LiteralPath",
+				".\\skill-barter-clock"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}
