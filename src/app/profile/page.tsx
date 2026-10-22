@@ -3,10 +3,12 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { AppShell, Icon } from "../site";
+import { AppShell, Avatar, Icon } from "../site";
 
 type Profile = {
   name: string;
+  avatarUrl: string;
+  role: "member" | "admin";
   email: string;
   bio: string;
   location: string;
@@ -46,13 +48,6 @@ export default function ProfilePage() {
     loadProfile();
   }, [router]);
 
-  const initials = profile?.name
-    .split(" ")
-    .map((part) => part[0])
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
-
   return (
     <AppShell title="Profile">
       {error && <p className="form-error" role="alert">{error}</p>}
@@ -61,14 +56,14 @@ export default function ProfilePage() {
       ) : (
         <>
           <div className="profile-banner">
-            <div className="profile-portrait"><span className="avatar avatar-lg initials">{initials}</span></div>
+            <div className="profile-portrait"><Avatar src={profile.avatarUrl || undefined} name={profile.name} size="lg" /></div>
             <div>
               <div className="eyebrow">YOUR COMMUNITY PROFILE</div>
               <h1>{profile.name}</h1>
               <p className="lead">{profile.bio || "Add a short introduction so other members can get to know you."}</p>
               <span className="profile-meta">
                 {profile.location || "Add your location"} <i>·</i> {profile.email} <i>·</i>
-                <Icon name="shield" size={14} /> Community member
+                <Icon name="shield" size={14} /> {profile.role === "admin" ? "Administrator" : "Community member"}
               </span>
             </div>
             <Link className="button button-secondary" href="/profile/edit">Edit profile</Link>

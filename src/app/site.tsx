@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { people } from "./data";
+import type { Person, PublicTeacher } from "./data";
 
 const navItems = [
   { href: "/", label: "Overview", icon: "grid" },
   { href: "/explore", label: "Explore skills", icon: "search" },
   { href: "/sessions", label: "My sessions", icon: "calendar" },
+  { href: "/teacher", label: "Teaching", icon: "check" },
   { href: "/wallet", label: "Time wallet", icon: "wallet" },
   { href: "/profile", label: "Profile", icon: "message" },
 ] as const;
@@ -46,28 +47,53 @@ export function Icon({ name, size = 19 }: { name: string; size?: number }) {
   return <svg {...common}>{paths[name] ?? paths.clock}</svg>;
 }
 
-export function Avatar({ image, name, size = "md" }: { image: string; name: string; size?: "sm" | "md" | "lg" }) {
-  return <span className={`avatar avatar-${size}`} title={name}><img src={`https://images.unsplash.com/${image}?auto=format&fit=crop&w=96&q=75`} alt="" /></span>;
+export function Avatar({ image, src, name, size = "md" }: { image?: string; src?: string; name: string; size?: "sm" | "md" | "lg" }) {
+  const initials = name
+    .split(" ")
+    .map((part) => part[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+
+  return (
+    <span className={`avatar avatar-${size}`} title={name}>
+      {src || image ? <img src={src ?? `https://images.unsplash.com/${image}?auto=format&fit=crop&w=96&q=75`} alt="" /> : <span className="avatar-initials">{initials}</span>}
+    </span>
+  );
 }
 
-export function TeacherCard({ person }: { person: (typeof people)[number] }) {
+export function TeacherCard({ person }: { person: Person | PublicTeacher }) {
+  const isPublicTeacher = "teaching_skills" in person;
+  const name = isPublicTeacher ? person.full_name : person.name;
+  const skill = isPublicTeacher ? person.teaching_skills.join(" · ") : person.skill;
+  const learningSkills = isPublicTeacher ? person.learning_skills.join(", ") : person.swap;
+
   return (
     <article className="teacher-card">
       <div className="teacher-top">
-        <Avatar image={person.image} name={person.name} size="md" />
+        <Avatar image={isPublicTeacher ? undefined : person.image} src={isPublicTeacher ? person.avatar_url : undefined} name={name} size="md" />
         <div>
-          <strong>{person.name}</strong>
-          <span>{person.skill}</span>
+          <strong>{name}</strong>
+          <span>{skill}</span>
         </div>
       </div>
-      <div className="teacher-meta">
-        <span>★ {person.rating}</span>
-        <span>{person.hours}</span>
-      </div>
-      <p>Open to swap for: {person.swap}</p>
+      {isPublicTeacher ? (
+        <p>{person.bio || `Based in ${person.location || person.timezone}. ${person.availability ? `Available: ${person.availability}.` : ""}`}</p>
+      ) : (
+        <div className="teacher-meta">
+          <span>★ {person.rating}</span>
+          <span>{person.hours}</span>
+        </div>
+      )}
+      <p>Open to swap for: {learningSkills || "Open to learning"}</p>
       <div className="teacher-actions">
         <Link className="button button-secondary small-button" href={`/teacher/${person.id}`}>View profile</Link>
-        <Link className="button button-primary small-button" href="/book">Book</Link>
+        <Link
+          className="button button-primary small-button"
+          href={`/book?teacher=${encodeURIComponent(person.id)}&skill=${encodeURIComponent(isPublicTeacher ? person.teaching_skills[0] ?? "" : person.skill.split(" · ")[0])}`}
+        >
+          Book
+        </Link>
       </div>
     </article>
   );
@@ -76,6 +102,8 @@ export function TeacherCard({ person }: { person: (typeof people)[number] }) {
 export function AppShell({ children, title }: { children: ReactNode; title: string }) {
   const router = useRouter();
   const [userName, setUserName] = useState("Maya Collins");
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
     async function loadSession() {
@@ -90,6 +118,8 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
         if (data?.user?.name) {
           setUserName(data.user.name);
         }
+        setAvatarUrl(data?.user?.avatarUrl ?? "");
+        setIsAdmin(data?.user?.role === "admin");
       } catch {
         router.replace("/login");
       }
@@ -97,13 +127,6 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
 
     loadSession();
   }, [router]);
-
-  const initials = userName
-    .split(" ")
-    .map((part) => part[0])
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
 
   return (
     <div className="app-shell">
@@ -115,7 +138,7 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
 
         <div className="side-label">YOUR SPACE</div>
         <nav className="side-nav" aria-label="Main navigation">
-          {navItems.map(({ href, icon, label }) => (
+          {[...navItems, ...(isAdmin ? [{ href: "/admin", label: "Admin", icon: "settings" as const }] : [])].map(({ href, icon, label }) => (
             <Link
               key={href}
               href={href}
@@ -137,7 +160,7 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
 
         <div className="sidebar-bottom">
           <button className="nav-item" type="button"><Icon name="settings" /><span>Settings</span></button>
-          <button className="user-mini" type="button"><span className="avatar avatar-sm initials">{initials}</span><span><b>{userName}</b><small>Community member</small></span><span className="dots">···</span></button>
+          <Link className="user-mini" href="/profile"><Avatar src={avatarUrl || undefined} name={userName} size="sm" /><span><b>{userName}</b><small>{isAdmin ? "Administrator" : "Community member"}</small></span><span className="dots">···</span></Link>
         </div>
       </aside>
 
@@ -148,7 +171,7 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
           <div className="top-actions">
             <span className="top-time"><Icon name="clock" size={16} /> Lagos, 3:42 PM</span>
             <button className="icon-button notification" type="button" aria-label="Notifications"><Icon name="bell" /><i /></button>
-            <span className="avatar avatar-sm initials top-avatar">{initials}</span>
+            <Avatar src={avatarUrl || undefined} name={userName} size="sm" />
           </div>
         </header>
 

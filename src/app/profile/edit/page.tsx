@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, type FormEvent } from "react";
-import { AppShell, Icon } from "../../site";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { AppShell, Avatar, Icon } from "../../site";
 
 type ProfileForm = {
   name: string;
@@ -50,6 +50,11 @@ export default function EditProfilePage() {
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
   const [emailChangePending, setEmailChangePending] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarMessage, setAvatarMessage] = useState("");
+  const avatarInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     async function loadProfile() {
@@ -65,6 +70,7 @@ export default function EditProfilePage() {
           return;
         }
         const user = data.user;
+        setAvatarUrl(user.avatarUrl ?? "");
         setForm({
           name: user.name ?? "",
           email: user.email ?? "",
@@ -89,6 +95,53 @@ export default function EditProfilePage() {
   function updateField(field: keyof ProfileForm, value: string) {
     setForm((current) => ({ ...current, [field]: value }));
     setSaved(false);
+  }
+
+  async function uploadAvatar() {
+    if (!avatarFile) return;
+    setAvatarBusy(true);
+    setAvatarMessage("");
+    setError("");
+    try {
+      const payload = new FormData();
+      payload.set("avatar", avatarFile);
+      const response = await fetch("/api/profile/avatar", { method: "POST", body: payload });
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.error || "Unable to upload your profile image.");
+        return;
+      }
+      setAvatarUrl(data.avatarUrl);
+      setAvatarFile(null);
+      if (avatarInput.current) avatarInput.current.value = "";
+      setAvatarMessage(data.cleanupWarning || "Profile image updated.");
+    } catch {
+      setError("We couldn’t reach the server. Your image wasn’t uploaded.");
+    } finally {
+      setAvatarBusy(false);
+    }
+  }
+
+  async function removeAvatar() {
+    setAvatarBusy(true);
+    setAvatarMessage("");
+    setError("");
+    try {
+      const response = await fetch("/api/profile/avatar", { method: "DELETE" });
+      const data = await response.json();
+      if (!response.ok) {
+        setError(data.error || "Unable to remove your profile image.");
+        return;
+      }
+      setAvatarUrl("");
+      setAvatarFile(null);
+      if (avatarInput.current) avatarInput.current.value = "";
+      setAvatarMessage(data.cleanupWarning || "Profile image removed.");
+    } catch {
+      setError("We couldn’t reach the server. Your image wasn’t removed.");
+    } finally {
+      setAvatarBusy(false);
+    }
   }
 
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
@@ -157,6 +210,45 @@ export default function EditProfilePage() {
         <div className="profile-edit-card" role="status">Loading your profile…</div>
       ) : (
         <form className="profile-edit-form" onSubmit={saveProfile}>
+          <section className="profile-edit-card profile-photo-card">
+            <div className="profile-edit-section-title">
+              <span className="profile-edit-step">00</span>
+              <div><h2>Profile photo</h2><p>Add a clear image so other members can recognize you.</p></div>
+            </div>
+            <div className="profile-photo-controls">
+              <Avatar src={avatarUrl || undefined} name={form.name || "Your profile"} size="lg" />
+              <div className="profile-photo-actions">
+                <input
+                  ref={avatarInput}
+                  id="profile-avatar"
+                  className="profile-avatar-input"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={(event) => {
+                    setAvatarFile(event.target.files?.[0] ?? null);
+                    setAvatarMessage("");
+                  }}
+                />
+                <label className="button button-secondary profile-photo-choose" htmlFor="profile-avatar">
+                  Choose image
+                </label>
+                {avatarFile && <span className="profile-photo-filename">{avatarFile.name}</span>}
+                <small>JPEG, PNG, or WebP · up to 5 MB</small>
+              </div>
+              <div className="profile-photo-buttons">
+                <button type="button" className="button button-primary" onClick={uploadAvatar} disabled={!avatarFile || avatarBusy}>
+                  {avatarBusy ? "Uploading…" : "Upload photo"}
+                </button>
+                {avatarUrl && (
+                  <button type="button" className="button button-quiet" onClick={removeAvatar} disabled={avatarBusy}>
+                    Remove
+                  </button>
+                )}
+              </div>
+            </div>
+            {avatarMessage && <p className="form-success" role="status">{avatarMessage}</p>}
+          </section>
+
           <section className="profile-edit-card">
             <div className="profile-edit-section-title">
               <span className="profile-edit-step">01</span>
