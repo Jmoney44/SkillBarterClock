@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Person, PublicTeacher } from "./data";
 
 const navItems = [
@@ -101,9 +101,38 @@ export function TeacherCard({ person }: { person: Person | PublicTeacher }) {
 
 export function AppShell({ children, title }: { children: ReactNode; title: string }) {
   const router = useRouter();
-  const [userName, setUserName] = useState("Maya Collins");
+  const [userName, setUserName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
+  const [userId, setUserId] = useState("");
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [readNotificationIds, setReadNotificationIds] = useState<string[]>([]);
+  const [notificationPreferences, setNotificationPreferences] = useState({
+    sessionUpdates: true,
+    adminAnnouncements: true,
+    creditActivity: true,
+  });
+  const [notificationError, setNotificationError] = useState("");
+  const [openMenu, setOpenMenu] = useState<"notifications" | "profile" | null>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState("");
+  const topActionsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!openMenu) return;
+    function closeMenu(event: PointerEvent) {
+      if (!topActionsRef.current?.contains(event.target as Node)) setOpenMenu(null);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpenMenu(null);
+    }
+    document.addEventListener("pointerdown", closeMenu);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeMenu);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [openMenu]);
 
   useEffect(() => {
     async function loadSession() {
@@ -118,8 +147,22 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
         if (data?.user?.name) {
           setUserName(data.user.name);
         }
+        const loadedUserId = data?.user?.id ?? "";
+        setUserId(loadedUserId);
         setAvatarUrl(data?.user?.avatarUrl ?? "");
         setIsAdmin(data?.user?.role === "admin");
+        if (loadedUserId) {
+          try {
+            const storedReadIds = window.localStorage.getItem(`read-notifications:${loadedUserId}`);
+            setReadNotificationIds(storedReadIds ? JSON.parse(storedReadIds) as string[] : []);
+            const storedPreferences = window.localStorage.getItem(`notification-preferences:${loadedUserId}`);
+            if (storedPreferences) {
+              setNotificationPreferences((current) => ({ ...current, ...JSON.parse(storedPreferences) }));
+            }
+          } catch {
+            setNotificationError("Could not read your saved notification settings on this device.");
+          }
+        }
       } catch {
         router.replace("/login");
       }
@@ -127,6 +170,59 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
 
     loadSession();
   }, [router]);
+
+  useEffect(() => {
+    async function loadNotifications() {
+      try {
+        const response = await fetch("/api/notifications", { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) {
+          if (response.status === 401) return;
+          throw new Error(data.error || "Unable to load notifications.");
+        }
+        setNotifications(data.notifications);
+      } catch (error) {
+        setNotificationError(error instanceof Error ? error.message : "Unable to load notifications.");
+      }
+    }
+    loadNotifications();
+  }, []);
+
+  async function logout() {
+    setLoggingOut(true);
+    setLogoutError("");
+    try {
+      const response = await fetch("/api/auth/logout", { method: "POST" });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Unable to log out. Please try again.");
+      }
+      router.push("/login");
+      router.refresh();
+    } catch (error) {
+      setLogoutError(error instanceof Error ? error.message : "Unable to log out. Please try again.");
+      setLoggingOut(false);
+    }
+  }
+
+  function markNotificationsRead() {
+    const readIds = visibleNotifications.map((notification) => notification.id);
+    setReadNotificationIds(readIds);
+    if (userId) {
+      try {
+        window.localStorage.setItem(`read-notifications:${userId}`, JSON.stringify(readIds));
+      } catch {
+        setNotificationError("Could not save your notification read status on this device.");
+      }
+    }
+  }
+
+  const visibleNotifications = notifications.filter((notification) => {
+    if (notification.category === "announcement") return notificationPreferences.adminAnnouncements;
+    if (notification.category === "session") return notificationPreferences.sessionUpdates;
+    return notificationPreferences.creditActivity;
+  });
+  const unreadCount = visibleNotifications.filter((notification) => !readNotificationIds.includes(notification.id)).length;
 
   return (
     <div className="app-shell">
@@ -159,19 +255,90 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
         </div>
 
         <div className="sidebar-bottom">
-          <button className="nav-item" type="button"><Icon name="settings" /><span>Settings</span></button>
-          <Link className="user-mini" href="/profile"><Avatar src={avatarUrl || undefined} name={userName} size="sm" /><span><b>{userName}</b><small>{isAdmin ? "Administrator" : "Community member"}</small></span><span className="dots">···</span></Link>
+          <Link className="user-mini" href="/profile"><Avatar src={avatarUrl || undefined} name={userName || "Your profile"} size="sm" /><span><b>{userName || "Your profile"}</b><small>{isAdmin ? "Administrator" : "Community member"}</small></span></Link>
         </div>
       </aside>
 
       <main className="main-area">
         <header className="topbar">
           <div className="mobile-brand"><span className="brand-mark"><span /><i /></span><span className="brand-name">skill barter<span>clock</span></span></div>
-          <div className="breadcrumb"><span>My space</span><b>/</b><strong>{title}</strong></div>
-          <div className="top-actions">
+          <div className="topbar-left">
+            <Link className="top-settings-link" href="/settings"><Icon name="settings" size={16} /><span>Settings</span></Link>
+            <div className="breadcrumb"><span>My space</span><b>/</b><strong>{title}</strong></div>
+          </div>
+          <div className="top-actions" ref={topActionsRef}>
             <span className="top-time"><Icon name="clock" size={16} /> Lagos, 3:42 PM</span>
-            <button className="icon-button notification" type="button" aria-label="Notifications"><Icon name="bell" /><i /></button>
-            <Avatar src={avatarUrl || undefined} name={userName} size="sm" />
+            <div className="header-menu-wrap">
+              <button
+                className="icon-button notification"
+                type="button"
+                aria-label={`Notifications${unreadCount ? `, ${unreadCount} unread` : ""}`}
+                aria-expanded={openMenu === "notifications"}
+                aria-controls="notification-menu"
+                onClick={() => setOpenMenu(openMenu === "notifications" ? null : "notifications")}
+              >
+                <Icon name="bell" />
+                {unreadCount > 0 && <i />}
+              </button>
+              {openMenu === "notifications" && (
+                <section className="header-popover notification-popover" id="notification-menu" aria-label="Notifications">
+                  <div className="popover-heading">
+                    <div><strong>Notifications</strong><small>{unreadCount ? `${unreadCount} unread` : "You’re all caught up"}</small></div>
+                    {unreadCount > 0 && <button type="button" className="text-link" onClick={markNotificationsRead}>Mark all read</button>}
+                  </div>
+                  {notificationError && <p className="popover-error" role="alert">{notificationError}</p>}
+                  <div className="notification-list">
+                    {visibleNotifications.map((notification) => (
+                      <Link
+                        className={`notification-item ${readNotificationIds.includes(notification.id) ? "" : "unread"}`}
+                        href={notification.href}
+                        key={notification.id}
+                        onClick={() => {
+                          const updated = [...new Set([...readNotificationIds, notification.id])];
+                          setReadNotificationIds(updated);
+                          if (userId) {
+                            try {
+                              window.localStorage.setItem(`read-notifications:${userId}`, JSON.stringify(updated));
+                            } catch {
+                              setNotificationError("Could not save your notification read status on this device.");
+                            }
+                          }
+                          setOpenMenu(null);
+                        }}
+                      >
+                        <span className={`notification-type ${notification.category}`}><Icon name={notification.category === "announcement" ? "shield" : notification.category === "credit" ? "wallet" : "calendar"} size={15} /></span>
+                        <span className="notification-copy"><b>{notification.title}</b><span>{notification.message}</span><small>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(notification.createdAt))}</small></span>
+                        {!readNotificationIds.includes(notification.id) && <i className="notification-unread-dot" />}
+                      </Link>
+                    ))}
+                    {visibleNotifications.length === 0 && !notificationError && <p className="notification-empty">No updates yet. Session and community updates will appear here.</p>}
+                  </div>
+                  <Link className="notification-footer" href="/sessions" onClick={() => setOpenMenu(null)}>View my sessions <Icon name="arrow" size={14} /></Link>
+                </section>
+              )}
+            </div>
+            <div className="header-menu-wrap">
+              <button
+                className="profile-menu-trigger"
+                type="button"
+                aria-label="Open profile menu"
+                aria-expanded={openMenu === "profile"}
+                aria-controls="profile-menu"
+                onClick={() => setOpenMenu(openMenu === "profile" ? null : "profile")}
+              >
+                <Avatar src={avatarUrl || undefined} name={userName || "Your profile"} size="sm" />
+                <span className="profile-menu-chevron">⌄</span>
+              </button>
+              {openMenu === "profile" && (
+                <div className="header-popover profile-popover" id="profile-menu">
+                  <div className="profile-popover-user"><Avatar src={avatarUrl || undefined} name={userName || "Your profile"} size="md" /><span><b>{userName || "Your profile"}</b><small>{isAdmin ? "Administrator" : "Community member"}</small></span></div>
+                  <Link href="/profile" onClick={() => setOpenMenu(null)}><Icon name="message" size={16} /> View profile</Link>
+                  <Link href="/settings" onClick={() => setOpenMenu(null)}><Icon name="settings" size={16} /> Settings</Link>
+                  <button type="button" onClick={logout} disabled={loggingOut}><Icon name="arrow" size={16} /> {loggingOut ? "Logging out…" : "Log out"}</button>
+                  {logoutError && <p className="popover-error" role="alert">{logoutError}</p>}
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -181,3 +348,12 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
     </div>
   );
 }
+
+type NotificationItem = {
+  id: string;
+  category: "announcement" | "session" | "credit";
+  title: string;
+  message: string;
+  createdAt: string;
+  href: string;
+};

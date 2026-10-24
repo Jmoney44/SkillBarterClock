@@ -660,3 +660,36 @@ $$;
 
 revoke all on function public.get_admin_overview() from public, anon;
 grant execute on function public.get_admin_overview() to authenticated;
+
+create table if not exists public.admin_announcements (
+  id uuid primary key default gen_random_uuid(),
+  author_id uuid not null references public.profiles (id) on delete cascade,
+  title text not null check (char_length(title) between 3 and 100),
+  message text not null check (char_length(message) between 5 and 500),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists admin_announcements_created_idx
+  on public.admin_announcements (created_at desc);
+
+alter table public.admin_announcements enable row level security;
+
+drop policy if exists "Signed-in members can read admin announcements" on public.admin_announcements;
+create policy "Signed-in members can read admin announcements"
+on public.admin_announcements for select
+to authenticated
+using ((select auth.uid()) is not null);
+
+drop policy if exists "Admins can publish announcements" on public.admin_announcements;
+create policy "Admins can publish announcements"
+on public.admin_announcements for insert
+to authenticated
+with check (
+  author_id = (select auth.uid())
+  and exists (
+    select 1 from public.profiles p
+    where p.id = (select auth.uid()) and p.role = 'admin'
+  )
+);
+
+grant select, insert on public.admin_announcements to authenticated;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Icon } from "../site";
 import { AdminShell } from "./admin-shell";
@@ -59,6 +59,11 @@ export default function AdminPage() {
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [announcementTitle, setAnnouncementTitle] = useState("");
+  const [announcementMessage, setAnnouncementMessage] = useState("");
+  const [announcementError, setAnnouncementError] = useState("");
+  const [announcementSent, setAnnouncementSent] = useState(false);
+  const [publishing, setPublishing] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -84,15 +89,38 @@ export default function AdminPage() {
     return () => { active = false; };
   }, [router]);
 
+  async function publishAnnouncement(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPublishing(true);
+    setAnnouncementError("");
+    setAnnouncementSent(false);
+    try {
+      const response = await fetch("/api/admin/announcements", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: announcementTitle, message: announcementMessage }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not publish the announcement.");
+      setAnnouncementTitle("");
+      setAnnouncementMessage("");
+      setAnnouncementSent(true);
+    } catch (publishError) {
+      setAnnouncementError(publishError instanceof Error ? publishError.message : "Could not publish the announcement.");
+    } finally {
+      setPublishing(false);
+    }
+  }
+
   return (
     <AdminShell>
       <div className="admin-page-heading">
         <div>
           <div className="eyebrow">PLATFORM OPERATIONS</div>
           <h1>Admin overview</h1>
-          <p className="lead">A read-only view of community health and session activity.</p>
+          <p className="lead">Monitor community activity and share important updates with members.</p>
         </div>
-        <span className="admin-readonly-pill"><Icon name="shield" size={14} /> READ ONLY</span>
+        <span className="admin-readonly-pill"><Icon name="shield" size={14} /> ADMIN TOOLS</span>
       </div>
 
       {error && <p className="form-error" role="alert">{error}</p>}
@@ -162,6 +190,28 @@ export default function AdminPage() {
               </table>
               {overview.recentSessions.length === 0 && <p className="admin-empty">No sessions to display.</p>}
             </div>
+          </section>
+
+          <section className="admin-section" id="announcements">
+            <div className="section-heading">
+              <div><div className="eyebrow">COMMUNITY UPDATES</div><h3>Send an announcement</h3></div>
+            </div>
+            <form className="admin-announcement-form" onSubmit={publishAnnouncement}>
+              <label className="field-wrap" htmlFor="announcement-title">
+                <span>Title</span>
+                <input id="announcement-title" value={announcementTitle} onChange={(event) => setAnnouncementTitle(event.target.value)} minLength={3} maxLength={100} required placeholder="A short, clear headline" />
+              </label>
+              <label className="field-wrap" htmlFor="announcement-message">
+                <span>Message</span>
+                <textarea id="announcement-message" value={announcementMessage} onChange={(event) => setAnnouncementMessage(event.target.value)} minLength={5} maxLength={500} rows={4} required placeholder="Share an update with all members…" />
+              </label>
+              {announcementError && <p className="form-error" role="alert">{announcementError}</p>}
+              {announcementSent && <p className="form-success" role="status">Announcement published and delivered to member notifications.</p>}
+              <div className="admin-announcement-actions">
+                <small>Members will see this in their notification bell.</small>
+                <button type="submit" className="button button-primary" disabled={publishing}>{publishing ? "Publishing…" : "Publish announcement"}</button>
+              </div>
+            </form>
           </section>
 
           <div className="fairness-note">
