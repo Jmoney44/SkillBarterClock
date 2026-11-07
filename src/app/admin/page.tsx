@@ -61,6 +61,7 @@ type AdminAction = {
 };
 
 type AdminOverview = {
+  viewerId: string;
   stats: {
     members: number;
     onboardedMembers: number;
@@ -97,6 +98,10 @@ const actionLabels: Record<string, string> = {
   cancel_session: "Cancelled session",
   complete_session: "Completed session",
   delete_announcement: "Deleted announcement",
+  make_admin: "Made admin",
+  remove_admin: "Removed admin",
+  promote_admin: "Made admin",
+  demote_admin: "Removed admin",
 };
 
 class UnauthorizedError extends Error {}
@@ -307,12 +312,13 @@ export default function AdminPage() {
                 <tbody>
                   {overview.members.map((member) => {
                     const actionable = member.role !== "admin" && !member.deleted_at;
+                    const isViewer = member.id === overview.viewerId;
                     return (
                       <tr key={member.id}>
                         <td>
                           <b>{member.full_name || "Name not set"}</b>
                           <span>{member.email || (member.deleted_at ? "Account deleted" : "No email")}</span>
-                          {member.role === "admin" && <em>Admin</em>}
+                          {member.role === "admin" && <em>{isViewer ? "Admin (you)" : "Admin"}</em>}
                         </td>
                         <td>
                           {member.deleted_at ? (
@@ -375,7 +381,39 @@ export default function AdminPage() {
                                   Suspend
                                 </button>
                               )}
+                              {!member.suspended_at && (
+                                <button
+                                  className="text-link"
+                                  type="button"
+                                  onClick={() => openAction({
+                                    action: "make_admin",
+                                    title: `Make ${member.full_name} an admin`,
+                                    description: "They’ll get full access to this admin page: suspending members, adjusting credits, resolving sessions, moderating reviews, and changing other members’ roles. Only give this to people you trust.",
+                                    confirmLabel: "Make admin",
+                                    danger: true,
+                                    target: { memberId: member.id },
+                                  })}
+                                >
+                                  Make admin
+                                </button>
+                              )}
                             </>
+                          )}
+                          {member.role === "admin" && !isViewer && !member.deleted_at && (
+                            <button
+                              className="text-link danger-button"
+                              type="button"
+                              onClick={() => openAction({
+                                action: "remove_admin",
+                                title: `Remove admin access from ${member.full_name}`,
+                                description: "They’ll become a regular member and lose access to this admin page. Their account, sessions, and credits are unchanged.",
+                                confirmLabel: "Remove admin",
+                                danger: true,
+                                target: { memberId: member.id },
+                              })}
+                            >
+                              Remove admin
+                            </button>
                           )}
                         </td>
                       </tr>

@@ -121,7 +121,7 @@ The trigger runs however the sign-in is deleted, including from the Supabase das
 
 ## Admin access
 
-The admin page shows community totals, recent members, and recent sessions, and lets administrators publish announcements to the notification bell. To promote an existing account, first run the updated `supabase/schema.sql`, then run this in the Supabase SQL Editor with that account's email:
+The admin page shows community totals, recent members, and recent sessions, and lets administrators publish announcements to the notification bell. Once you have one admin, they can manage roles from the admin page. To create the first admin, run the updated `supabase/schema.sql`, then run this in the Supabase SQL Editor with that account's email:
 
 ```sql
 update public.profiles
@@ -141,10 +141,11 @@ Admins can:
 - Cancel any open session with a refund, or mark a confirmed or in-progress session complete and pay the teacher.
 - Hide or restore reviews. Hidden reviews don't count towards ratings.
 - Delete announcements.
+- Make a member an admin, or remove another admin's access. Admins can't change their own role, so there's always at least one admin. Suspended members must be unsuspended before they can be made admins.
 
 Every action needs a reason and is recorded in the audit log on the admin page. Admins can't use these tools on their own account or sessions, or on other admins.
 
-Admin access is never granted during public signup. The overview is checked inside a restricted database function as well as the API; the admin role is not writable through profile APIs. To revoke access, set that profile's role back to `member` in the SQL Editor.
+Admin access is never granted during public signup. The overview is checked inside a restricted database function as well as the API; the admin role is not writable through profile APIs. To revoke access, use **Remove admin** on the admin page, or set that profile's role back to `member` in the SQL Editor. A changed role can take up to five minutes to update the affected member's menus; database permissions change immediately.
 
 ## Development
 

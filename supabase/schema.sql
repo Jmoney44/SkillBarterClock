@@ -1929,6 +1929,40 @@ begin
 end;
 $$;
 
+-- Makes a member an admin or an admin a member. Admins can't change their own
+-- role, so there is always at least one admin left (the one acting).
+create or replace function public.admin_set_role(p_user_id uuid, p_role text, p_reason text)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_admin_id uuid := public.assert_admin();
+  v_member public.profiles%rowtype;
+begin
+  if p_role is null or p_role not in ('member', 'admin') then
+    raise exception using errcode = '22023', message = 'Choose member or admin.';
+  end if;
+  if p_user_id = v_admin_id then
+    raise exception using errcode = '22023', message = 'You can''t change your own role. Ask another admin.';
+  end if;
+  select * into v_member from public.profiles where id = p_user_id for update;
+  if not found or v_member.deleted_at is not null then
+    raise exception using errcode = 'P0002', message = 'Member not found.';
+  end if;
+  if v_member.role = p_role then
+    raise exception using errcode = '22023', message = case when p_role = 'admin' then 'This member is already an admin.' else 'This member isn''t an admin.' end;
+  end if;
+  if p_role = 'admin' and v_member.suspended_at is not null then
+    raise exception using errcode = '22023', message = 'Unsuspend this member before making them an admin.';
+  end if;
+
+  perform public.admin_log(case when p_role = 'admin' then 'promote_admin' else 'demote_admin' end, p_reason, p_user_id);
+  update public.profiles set role = p_role where id = p_user_id;
+end;
+$$;
+
 create or replace function public.admin_delete_announcement(p_announcement_id uuid, p_reason text)
 returns void
 language plpgsql
@@ -1960,6 +1994,7 @@ begin
   perform public.assert_admin();
 
   select jsonb_build_object(
+    'viewerId', auth.uid(),
     'stats', jsonb_build_object(
       'members', (select count(*) from public.profiles where deleted_at is null),
       'onboardedMembers', (select count(*) from public.profiles where onboarding_complete and deleted_at is null),
@@ -2058,6 +2093,8 @@ revoke all on function public.admin_adjust_credits(uuid, numeric, text) from pub
 revoke all on function public.admin_set_review_hidden(uuid, boolean, text) from public, anon;
 revoke all on function public.admin_resolve_session(uuid, text, text) from public, anon;
 revoke all on function public.admin_delete_announcement(uuid, text) from public, anon;
+revoke all on function public.admin_set_role(uuid, text, text) from public, anon;
+grant execute on function public.admin_set_role(uuid, text, text) to authenticated;
 revoke all on function public.get_admin_overview(text) from public, anon;
 grant execute on function public.admin_suspend_member(uuid, text) to authenticated;
 grant execute on function public.admin_unsuspend_member(uuid, text) to authenticated;

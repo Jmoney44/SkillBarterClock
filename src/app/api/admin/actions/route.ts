@@ -65,6 +65,13 @@ export async function POST(request: Request) {
       rpc = supabase.rpc("admin_resolve_session", { p_session_id: sessionId, p_resolution: action === "cancel_session" ? "cancel" : "complete", p_reason: reason });
       break;
     }
+    case "make_admin":
+    case "remove_admin": {
+      const memberId = id(body?.memberId);
+      if (!memberId) return NextResponse.json({ error: "Choose a valid member." }, { status: 400 });
+      rpc = supabase.rpc("admin_set_role", { p_user_id: memberId, p_role: action === "make_admin" ? "admin" : "member", p_reason: reason });
+      break;
+    }
     case "delete_announcement": {
       const announcementId = id(body?.announcementId);
       if (!announcementId) return NextResponse.json({ error: "Choose a valid announcement." }, { status: 400 });
