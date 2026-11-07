@@ -106,6 +106,19 @@ To turn it on:
 
 Without these settings the app works normally and emails stay queued.
 
+## Account deletion
+
+Members can delete their account from Settings by entering their current password and typing DELETE. The app deletes their Supabase sign-in using the server-only `SUPABASE_SERVICE_ROLE_KEY`, so deletion needs that key set. A database trigger on `auth.users` then:
+
+- Cancels the member's requested and confirmed sessions, refunds learners, and emails partners.
+- Completes any session already in progress, since both partners started it.
+- Removes their weekly hours, wallet history, and queued emails.
+- Replaces their profile with an anonymous "Deleted member" record that's hidden from Explore.
+
+Partners keep their session history and the credits they earned. Reviews the member wrote stay, shown as "Former member". Profile photos are deleted from storage. The same email address can sign up again as a new member.
+
+The trigger runs however the sign-in is deleted, including from the Supabase dashboard (Authentication → Users). Admin accounts must be changed to `member` before they can delete themselves in the app.
+
 ## Admin access
 
 The admin page shows community totals, recent members, and recent sessions, and lets administrators publish announcements to the notification bell. To promote an existing account, first run the updated `supabase/schema.sql`, then run this in the Supabase SQL Editor with that account's email:

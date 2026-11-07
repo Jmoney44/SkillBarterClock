@@ -22,6 +22,8 @@ alter table public.profiles
 alter table public.profiles
   add column if not exists avatar_path text;
 alter table public.profiles
+  add column if not exists deleted_at timestamptz;
+alter table public.profiles
   drop constraint if exists profiles_role_check;
 alter table public.profiles
   add constraint profiles_role_check check (role in ('member', 'admin'));
@@ -961,7 +963,10 @@ as $$
     r.rating,
     r.comment,
     s.skill,
-    coalesce(nullif(split_part(btrim(reviewer.full_name), ' ', 1), ''), 'A learner'),
+    case
+      when reviewer.deleted_at is not null then 'Former member'
+      else coalesce(nullif(split_part(btrim(reviewer.full_name), ' ', 1), ''), 'A learner')
+    end,
     r.created_at
   from public.session_reviews r
   join public.sessions s on s.id = r.session_id
@@ -1613,3 +1618,85 @@ revoke all on function public.claim_notifications(integer) from public, anon, au
 revoke all on function public.finish_notification(uuid, text, text) from public, anon, authenticated;
 grant execute on function public.claim_notifications(integer) to service_role;
 grant execute on function public.finish_notification(uuid, text, text) to service_role;
+
+-- ---------------------------------------------------------------------------
+-- Account deletion
+-- Deleting a sign-in (from the app or the Supabase dashboard) keeps an
+-- anonymised "Deleted member" profile so partners keep their session history,
+-- reviews, and earned credits. Open sessions are settled first so no one's
+-- credits are left held.
+-- ---------------------------------------------------------------------------
+
+-- Profiles outlive their auth user, so the profile no longer cascades from it.
+alter table public.profiles
+  drop constraint if exists profiles_id_fkey;
+
+create or replace function public.close_member_account(p_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_session record;
+begin
+  for v_session in
+    select s.id, s.status
+    from public.sessions s
+    where s.status in ('requested', 'confirmed', 'in_progress')
+      and p_user_id in (s.learner_id, s.teacher_id)
+    order by s.id
+  loop
+    if v_session.status = 'in_progress' then
+      -- Both partners started it, so it counts as taught.
+      perform public.complete_session(v_session.id, 'auto_completed');
+    else
+      perform public.release_session_hold(v_session.id, 'cancelled');
+    end if;
+  end loop;
+
+  delete from public.availability_windows where user_id = p_user_id;
+  delete from public.notification_outbox where recipient_id = p_user_id;
+  delete from public.wallet_transactions where user_id = p_user_id;
+
+  update public.profiles
+  set full_name = 'Deleted member',
+      bio = '',
+      location = '',
+      languages = '{}',
+      timezone = '',
+      availability = '',
+      teaching_skills = '{}',
+      learning_skills = '{}',
+      avatar_path = null,
+      onboarding_complete = false,
+      role = 'member',
+      credit_balance = 0,
+      pending_credits = 0,
+      email_notifications = false,
+      notification_time_zone = null,
+      availability_time_zone = null,
+      deleted_at = coalesce(deleted_at, now())
+  where id = p_user_id;
+end;
+$$;
+
+create or replace function public.handle_auth_user_deleted()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  perform public.close_member_account(old.id);
+  return old;
+end;
+$$;
+
+drop trigger if exists on_auth_user_deleted_profile on auth.users;
+create trigger on_auth_user_deleted_profile
+before delete on auth.users
+for each row execute function public.handle_auth_user_deleted();
+
+revoke all on function public.close_member_account(uuid) from public, anon, authenticated;
+revoke all on function public.handle_auth_user_deleted() from public, anon, authenticated;

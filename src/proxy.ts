@@ -12,7 +12,7 @@ import {
 // Signed-out only: signed-in members are sent on to the app.
 const guestOnlyPaths = ["/login", "/signup", "/forgot-password"];
 // Reachable either way: email link handlers and the reset form.
-const openPaths = ["/auth", "/reset-password"];
+const openPaths = ["/auth", "/reset-password", "/account-deleted"];
 
 function matchesPath(pathname: string, prefixes: string[]) {
   return prefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));

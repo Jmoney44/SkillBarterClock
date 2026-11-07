@@ -485,3 +485,14 @@ h1 { margin: 7px 0 3px; font-family: var(--font-display), Georgia, serif; font-s
   .availability-day > b, .availability-day > .text-link, .availability-off { padding-top: 0; }
 }
 .clock-panel > .field-stack { width: 100%; }
+
+/* Settings: delete account */
+.settings-danger-card { border-color: color-mix(in srgb, #b42318 30%, var(--line)); }
+.settings-delete-form { display: grid; gap: 12px; }
+.settings-delete-form .field-wrap input { width: 100%; min-height: 42px; padding: 0 12px; }
+.settings-delete-list { display: grid; gap: 6px; margin: 0; padding-left: 18px; list-style: disc; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.danger-button { color: #b42318; }
+.button-primary.danger-button { color: #fff; background: #b42318; border-color: #b42318; }
+
+/* Standalone auth cards (account deleted, confirmation error) */
+.auth-shell > .auth-card { width: 100%; max-width: 520px; margin: auto; }

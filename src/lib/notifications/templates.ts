@@ -45,7 +45,8 @@ export function renderNotification(row: ClaimedNotification, siteUrl: string): R
   if (!row.session_id || !row.scheduled_at) return { skip: "session_deleted" };
 
   const firstName = row.recipient_name.trim().split(" ")[0] || "there";
-  const partner = row.partner_name?.trim() || "your partner";
+  const partnerDeleted = row.partner_name === "Deleted member";
+  const partner = partnerDeleted ? "your partner" : row.partner_name?.trim() || "your partner";
   const skill = row.skill ?? "your session";
   const hours = Number(row.duration_hours ?? 0);
   const when = formatWhen(row.scheduled_at, row.recipient_time_zone);
@@ -80,7 +81,9 @@ export function renderNotification(row: ClaimedNotification, siteUrl: string): R
       break;
     case "session_cancelled":
       subject = `${skill} session on ${new Date(row.scheduled_at).toISOString().slice(0, 10)} was cancelled`;
-      lines = [`${partner} cancelled your ${skill} session for ${when}.`, row.recipient_role === "learner" ? `Your ${hours.toFixed(1)} time credits have been returned to your wallet.` : "No credits were transferred."];
+      lines = [partnerDeleted
+        ? `Your ${skill} session for ${when} was cancelled because your partner closed their account.`
+        : `${partner} cancelled your ${skill} session for ${when}.`, row.recipient_role === "learner" ? `Your ${hours.toFixed(1)} time credits have been returned to your wallet.` : "No credits were transferred."];
       action = { label: "View your sessions", url: `${siteUrl}/sessions` };
       break;
     case "session_not_started":
