@@ -12,7 +12,14 @@ Skill Barter Clock is a time-credit skill exchange prototype built with Next.js,
    - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` to the project's publishable key. A legacy anon key can be used under `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
 4. In Supabase Auth URL Configuration, set the Site URL to your app URL and add the matching `/auth/callback` URL to the allowed redirect URLs.
 5. If email confirmation is enabled, configure the Supabase confirmation email to use its `{{ .ConfirmationURL }}` template value. The app's signup flow displays a check-your-email message and the callback completes the session.
-6. Start the app:
+6. For password reset emails, open Supabase Auth → Emails → Reset Password and change the link to:
+
+   ```html
+   <a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery&next=/reset-password">Reset your password</a>
+   ```
+
+   This lets members open the link on any device. The default `{{ .ConfirmationURL }}` link also works, through `/auth/callback`, but only in the same browser that requested the reset.
+7. Start the app:
 
    ```bash
    npm run dev
@@ -20,7 +27,20 @@ Skill Barter Clock is a time-credit skill exchange prototype built with Next.js,
 
 The app uses Supabase Auth for accounts and cookie-based sessions. User-owned profile rows are protected by row-level security. Credit balance fields are not client-updatable. The notification menu combines session and time-credit activity with announcements published by administrators; notification preferences and read status are saved in the member's browser.
 
+Members who forget their password can use **Forgot password?** on the login page. They get the same "check your email" message whether or not the address has an account. The emailed link signs them in on `/reset-password`, where they choose a new password. Expired or used links return them to `/forgot-password` to request a new one. Supabase's own email rate limits apply.
+
 Members can upload a JPEG, PNG, or WebP profile photo up to 5 MB from Profile → Edit profile. The image is stored in the public `avatars` bucket; upload and removal are restricted to the signed-in member's own storage folder. Rerun the updated schema if the profile table was already created.
+
+## Page access
+
+`src/proxy.ts` (Next.js Proxy, formerly Middleware) checks each page request on the server before anything renders:
+
+- Signed-out visitors are sent to `/login`, which returns them to the page they asked for after logging in.
+- Signed-in members who haven't finished onboarding are sent to `/onboarding`. Admins are exempt.
+- Signed-in members are sent away from `/login`, `/signup`, and `/forgot-password`, and non-admins away from `/admin`.
+- Expiring Supabase sessions are refreshed.
+
+To avoid a database query on every request, the member's onboarding state and role are cached in a five-minute `sbc-access` cookie. It's cleared when a member logs in, logs out, or finishes onboarding. The proxy only steers navigation: API routes and database functions still check access on every read and write. Supabase verifies sessions locally, without a network call, if the project uses asymmetric JWT signing keys (Supabase → Project Settings → JWT Keys).
 
 ## Sessions and time credits
 
@@ -28,13 +48,81 @@ After applying the schema, the app can list public, onboarding-complete teacher 
 
 The session policy currently requires requests at least one hour ahead and within 90 days, with durations from 30 minutes to 4 hours in 30-minute increments. The app's booking form and database function both enforce these limits.
 
+Each session has an optional "where to meet" field for a video call link, phone number, or meeting place (up to 500 characters). The learner can add it when booking, and either participant can change it from the session room until the session ends. Only the two participants can see it, and only `http`/`https` links are made clickable.
+
+Held credits never stay stuck. The database enforces these timing rules:
+
+- A teacher can accept a request only before its scheduled time. An unanswered request expires at its scheduled time and the learner's credits are returned.
+- A confirmed session can be started from 15 minutes before its scheduled time until its scheduled end (start time plus duration). If both people have not started it by then, it closes as "not started" and the learner's credits are returned.
+- A session in progress that both people don't end within one hour after its expected finish (actual start plus duration) completes automatically, and the teacher receives the credits.
+
+Overdue sessions are resolved whenever a participant loads their profile, sessions, wallet, or notifications. To also resolve them for members who are not signed in, enable the `pg_cron` extension in Supabase (Database → Extensions) and rerun `supabase/schema.sql`. That schedules `public.resolve_stale_sessions()` every 10 minutes.
+
 The `/teacher` page is the teaching workspace. It shows incoming learner requests, upcoming teaching sessions, scheduled teaching hours, and completed teaching credits. Teachers can accept or decline requests and start or finish sessions from this dashboard.
 
 If you already ran an earlier version of `supabase/schema.sql`, run the updated file again in the Supabase SQL Editor to add the session, wallet, and admin-announcement tables, policies, and functions. The schema is safe to re-run.
 
+## Weekly availability
+
+Teachers set recurring weekly hours, such as Monday 6:00–9:00 PM, in their own time zone from Teaching → **Set weekly hours** (`/teacher/availability`). When booking a teacher who has hours, learners pick from open half-hour start times shown in the learner's own time zone. Only start times where the chosen length fits are offered, and times taken by the teacher's other sessions are left out. `request_session` rejects times outside a teacher's hours. Teachers who haven't set hours keep the free date-and-time picker, and their requests aren't restricted. Daylight-saving changes are handled through the IANA time zone (for example, 9:00 AM in New York stays 9:00 AM local).
+
+## Ratings and reviews
+
+After a session is completed, the learner can rate the teacher from 1 to 5 stars and add an optional comment (up to 500 characters) from the session room. There's one review per session, and the learner can edit it for 30 days after the session ends. Teachers see their reviews on the Teaching dashboard. Other members see each teacher's average rating on Explore and the reviews on the teacher's profile, with reviewers shown by first name only. Reviews are written only through the `submit_session_review` database function.
+
+## Notification emails
+
+Members get emails about their sessions:
+
+- **Teacher:** a new request.
+- **Learner:** a request accepted, declined, or expired.
+- **The other person:** a cancellation, or a change to the meeting details.
+- **Both:** a reminder about an hour before the session, and notice when a session closes as not started or auto-completed.
+- **Teacher:** a new review.
+- **Suspended or restored members:** a notice that their account was suspended (with the admin's reason) or restored. These are sent even if the member turned emails off.
+
+Times are shown in each member's own time zone, which the app records from their browser. Members can turn emails off in Settings.
+
+Database triggers queue each email in `notification_outbox`, including events from the scheduled cleanup. The app sends queued emails through [Resend](https://resend.com) right after a member's action, and on a schedule for reminders and background events. Emails that are out of date by the time they're sent are skipped, such as a request that was already cancelled. Failed sends are retried up to five times with increasing gaps.
+
+To turn it on:
+
+1. Create a Resend account, verify your sending domain, and create an API key.
+2. Set `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`, `EMAIL_FROM`, `CRON_SECRET`, and `NEXT_PUBLIC_SITE_URL` (see `.env.example`). Optionally set `SUPPORT_EMAIL` as the reply-to address and the contact given in suspension notices. The service role key is used only on the server, by the email sender.
+3. Rerun `supabase/schema.sql`.
+4. Call `GET /api/cron/notifications` with `Authorization: Bearer <CRON_SECRET>` every 5–10 minutes. Each call also resolves overdue sessions and queues reminders. For example, with Supabase's `pg_cron` and `pg_net` extensions:
+
+   ```sql
+   select cron.schedule(
+     'send-notification-emails',
+     '*/5 * * * *',
+     $$ select net.http_get(
+          url := 'https://your-app.example.com/api/cron/notifications',
+          headers := jsonb_build_object('Authorization', 'Bearer YOUR_CRON_SECRET')
+        ) $$
+   );
+   ```
+
+   Vercel Cron also works and sends the `CRON_SECRET` header automatically, but the Hobby plan only runs jobs once a day, which is too infrequent for reminders.
+
+Without these settings the app works normally and emails stay queued.
+
+## Account deletion
+
+Members can delete their account from Settings by entering their current password and typing DELETE. The app deletes their Supabase sign-in using the server-only `SUPABASE_SERVICE_ROLE_KEY`, so deletion needs that key set. A database trigger on `auth.users` then:
+
+- Cancels the member's requested and confirmed sessions, refunds learners, and emails partners.
+- Completes any session already in progress, since both partners started it.
+- Removes their weekly hours, wallet history, and queued emails.
+- Replaces their profile with an anonymous "Deleted member" record that's hidden from Explore.
+
+Partners keep their session history and the credits they earned. Reviews the member wrote stay, shown as "Former member". Profile photos are deleted from storage. The same email address can sign up again as a new member.
+
+The trigger runs however the sign-in is deleted, including from the Supabase dashboard (Authentication → Users). Admin accounts must be changed to `member` before they can delete themselves in the app.
+
 ## Admin access
 
-The admin page shows community totals, recent members, and recent sessions, and lets administrators publish announcements to the notification bell. To promote an existing account, first run the updated `supabase/schema.sql`, then run this in the Supabase SQL Editor with that account's email:
+The admin page shows community totals, recent members, and recent sessions, and lets administrators publish announcements to the notification bell. Once you have one admin, they can manage roles from the admin page. To create the first admin, run the updated `supabase/schema.sql`, then run this in the Supabase SQL Editor with that account's email:
 
 ```sql
 update public.profiles
@@ -46,7 +134,19 @@ where id = (
 );
 ```
 
-Admin access is never granted during public signup. The overview is checked inside a restricted database function as well as the API; the admin role is not writable through profile APIs. To revoke access, set that profile's role back to `member` in the SQL Editor.
+Admins can:
+
+- Search members by name or email.
+- Adjust a member's credits, up or down. The change shows in their wallet with the reason.
+- Suspend or unsuspend members. Suspension blocks sign-in at Supabase Auth (this needs `SUPABASE_SERVICE_ROLE_KEY`) and blocks every member action in the database. It hides the member from Explore and cancels their requested and confirmed sessions, refunding learners. Sessions already in progress are left for the admin to resolve.
+- Cancel any open session with a refund, or mark a confirmed or in-progress session complete and pay the teacher.
+- Hide or restore reviews. Hidden reviews don't count towards ratings.
+- Delete announcements.
+- Make a member an admin, or remove another admin's access. Admins can't change their own role, so there's always at least one admin. Suspended members must be unsuspended before they can be made admins.
+
+Every action needs a reason and is recorded in the audit log on the admin page. Admins can't use these tools on their own account or sessions, or on other admins.
+
+Admin access is never granted during public signup. The overview is checked inside a restricted database function as well as the API; the admin role is not writable through profile APIs. To revoke access, use **Remove admin** on the admin page, or set that profile's role back to `member` in the SQL Editor. A changed role can take up to five minutes to update the affected member's menus; database permissions change immediately.
 
 ## Development
 

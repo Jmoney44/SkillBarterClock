@@ -4,6 +4,9 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AppShell, Avatar, Icon } from "../site";
+import { MeetingDetailsText } from "../meeting-details";
+import { Stars } from "../ratings";
+import { closedReasonLabel, startAvailability, type ClosedReason } from "@/lib/session-rules";
 
 type SessionStatus = "requested" | "confirmed" | "in_progress" | "completed" | "cancelled";
 type SessionRecord = {
@@ -15,6 +18,10 @@ type SessionRecord = {
   duration_hours: number | string;
   status: SessionStatus;
   learner_note: string;
+  closed_reason: ClosedReason | null;
+  meeting_details: string;
+  ended_at: string | null;
+  review_rating: number | null;
   role: "learner" | "teacher";
   partner_id: string;
   partner_name: string;
@@ -23,7 +30,7 @@ type SessionTab = "upcoming" | "past" | "requests";
 
 class UnauthorizedError extends Error {}
 
-function statusLabel(status: SessionStatus) {
+function statusLabel(status: SessionStatus, closedReason: ClosedReason | null) {
   const labels: Record<SessionStatus, string> = {
     requested: "Awaiting response",
     confirmed: "Confirmed",
@@ -31,7 +38,7 @@ function statusLabel(status: SessionStatus) {
     completed: "Completed",
     cancelled: "Cancelled",
   };
-  return labels[status];
+  return closedReasonLabel(closedReason) ?? labels[status];
 }
 
 async function fetchSessions(): Promise<SessionRecord[]> {
@@ -49,6 +56,18 @@ export default function SessionsPage() {
   const [loading, setLoading] = useState(true);
   const [activeId, setActiveId] = useState("");
   const [error, setError] = useState("");
+  // Null until the first client tick, so prerendering never reads the clock.
+  const [now, setNow] = useState<number | null>(null);
+
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    const firstTick = window.setTimeout(tick, 0);
+    const timer = window.setInterval(tick, 30_000);
+    return () => {
+      window.clearTimeout(firstTick);
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const loadSessions = useCallback(async () => setSessions(await fetchSessions()), []);
 
@@ -128,6 +147,12 @@ export default function SessionsPage() {
         {visibleSessions.map((session) => {
           const scheduled = new Date(session.scheduled_at);
           const canManageRequest = session.role === "teacher" && session.status === "requested";
+          const start = startAvailability(session, now);
+          const canReview = session.status === "completed"
+            && session.role === "learner"
+            && !session.review_rating
+            && now !== null
+            && now - new Date(session.ended_at ?? session.scheduled_at).getTime() < 30 * 24 * 3_600_000;
           return (
             <article className="session-card" key={session.id}>
               <div className="date-tile">
@@ -139,8 +164,15 @@ export default function SessionsPage() {
                 <strong>{session.skill}</strong>
                 <span>{session.role === "learner" ? "Teaching by" : "Learning with"} {session.partner_name} <i>·</i> {new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(scheduled)}</span>
                 <small><Icon name="clock" size={14} /> {Number(session.duration_hours)} hour{Number(session.duration_hours) === 1 ? "" : "s"} <i>·</i> {session.role === "learner" ? "You’re learning" : "You’re teaching"}</small>
+                {["requested", "confirmed", "in_progress"].includes(session.status) && (
+                  <small>{session.meeting_details ? <>Meet: <MeetingDetailsText text={session.meeting_details} /></> : "No meeting details yet. Add them in the session room."}</small>
+                )}
+                {session.status === "confirmed" && start.hint && <small>{start.hint}</small>}
+                {session.status === "completed" && session.review_rating && (
+                  <small><Stars rating={session.review_rating} /> {session.role === "learner" ? "Your review" : "Learner’s review"}</small>
+                )}
               </div>
-              <span className={`status-pill ${session.status === "completed" ? "status-done" : ["requested", "in_progress"].includes(session.status) ? "status-wait" : ""}`}><i />{statusLabel(session.status)}</span>
+              <span className={`status-pill ${session.status === "completed" ? "status-done" : ["requested", "in_progress"].includes(session.status) ? "status-wait" : ""}`}><i />{statusLabel(session.status, session.closed_reason)}</span>
               <div className="session-actions">
                 {canManageRequest && (
                   <>
@@ -149,7 +181,7 @@ export default function SessionsPage() {
                   </>
                 )}
                 {session.status === "confirmed" && (
-                  <button className="button button-secondary small-button" type="button" disabled={activeId === session.id} onClick={() => void actOnSession(session.id, "start")}>Start</button>
+                  <button className="button button-secondary small-button" type="button" disabled={activeId === session.id || !start.canStart} title={start.hint || undefined} onClick={() => void actOnSession(session.id, "start")}>Start</button>
                 )}
                 {session.status === "in_progress" && (
                   <button className="button button-secondary small-button" type="button" disabled={activeId === session.id} onClick={() => void actOnSession(session.id, "end")}>Finish</button>
@@ -157,7 +189,11 @@ export default function SessionsPage() {
                 {["requested", "confirmed"].includes(session.status) && (
                   <button className="button button-secondary small-button" type="button" disabled={activeId === session.id} onClick={() => void actOnSession(session.id, "cancel")}>Cancel</button>
                 )}
-                <Link className="button button-secondary small-button" href={`/session?id=${encodeURIComponent(session.id)}`}>Open</Link>
+                {canReview ? (
+                  <Link className="button button-primary small-button" href={`/session?id=${encodeURIComponent(session.id)}`}>Leave a review</Link>
+                ) : (
+                  <Link className="button button-secondary small-button" href={`/session?id=${encodeURIComponent(session.id)}`}>Open</Link>
+                )}
               </div>
             </article>
           );
@@ -174,7 +210,7 @@ export default function SessionsPage() {
 
       <div className="empty-hint">
         <Icon name="calendar" />
-        <span>Credits return automatically when a request is declined or cancelled before the session starts.</span>
+        <span>Credits return automatically when a request is declined, cancelled, or expires, or when a session isn’t started by both people before its scheduled end. Sessions left running are completed automatically an hour after they should have ended.</span>
       </div>
     </AppShell>
   );

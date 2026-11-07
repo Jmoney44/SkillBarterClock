@@ -6,7 +6,9 @@ const adminLinks = [
   { href: "/admin", label: "Overview", icon: "grid" },
   { href: "/admin#community", label: "Members", icon: "message" },
   { href: "/admin#sessions", label: "Sessions", icon: "calendar" },
+  { href: "/admin#reviews", label: "Reviews", icon: "check" },
   { href: "/admin#announcements", label: "Announcements", icon: "bell" },
+  { href: "/admin#audit-log", label: "Audit log", icon: "shield" },
 ] as const;
 
 export function AdminShell({ children }: { children: ReactNode }) {

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { resolveMyStaleSessions } from "@/lib/supabase/sessions";
+import { sendQueuedEmailsSoon } from "@/lib/notifications/outbox";
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const actions = new Set(["accept", "decline", "start", "end", "cancel"]);
@@ -18,6 +20,7 @@ export async function GET() {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
+  await resolveMyStaleSessions(supabase);
   const { data, error } = await supabase.rpc("get_my_sessions");
   if (error) {
     console.error("Could not load sessions:", error);
@@ -60,6 +63,7 @@ export async function POST(request: Request) {
   const scheduledAt = typeof values.scheduledAt === "string" ? values.scheduledAt : "";
   const durationHours = values.durationHours;
   const learnerNote = typeof values.note === "string" ? values.note.trim() : "";
+  const meetingDetails = typeof values.meetingDetails === "string" ? values.meetingDetails.trim() : "";
 
   if (!uuidPattern.test(teacherId)) {
     return badRequestJson("Choose a valid teacher.");
@@ -72,8 +76,9 @@ export async function POST(request: Request) {
     || typeof durationHours !== "number"
     || !Number.isFinite(durationHours)
     || learnerNote.length > 500
+    || meetingDetails.length > 500
   ) {
-    return badRequestJson("Check the skill, time, session length, and note.");
+    return badRequestJson("Check the skill, time, session length, note, and meeting details.");
   }
 
   const { data: sessionId, error } = await supabase.rpc("request_session", {
@@ -82,6 +87,7 @@ export async function POST(request: Request) {
     p_scheduled_at: new Date(scheduledAt).toISOString(),
     p_duration_hours: durationHours,
     p_learner_note: learnerNote,
+    p_meeting_details: meetingDetails,
   });
 
   if (error) {
@@ -95,6 +101,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Could not create the session request." }, { status: 500 });
   }
 
+  sendQueuedEmailsSoon();
   return NextResponse.json({ success: true, sessionId }, { status: 201 });
 }
 
@@ -120,10 +127,33 @@ export async function PATCH(request: Request) {
   const values = body as Record<string, unknown>;
   const sessionId = typeof values.sessionId === "string" ? values.sessionId : "";
   const action = typeof values.action === "string" ? values.action : "";
-  if (!uuidPattern.test(sessionId) || !actions.has(action)) {
+  if (!uuidPattern.test(sessionId) || (!actions.has(action) && action !== "set_meeting_details")) {
     return badRequestJson("Choose a valid session and action.");
   }
 
+  if (action === "set_meeting_details") {
+    if (typeof values.meetingDetails !== "string" || values.meetingDetails.trim().length > 500) {
+      return badRequestJson("Meeting details must be 500 characters or fewer.");
+    }
+    const { data: meetingDetails, error } = await supabase.rpc("set_session_meeting_details", {
+      p_session_id: sessionId,
+      p_meeting_details: values.meetingDetails.trim(),
+    });
+    if (error) {
+      if (error.code === "28000") {
+        return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+      }
+      if (["22023", "P0002"].includes(error.code ?? "")) {
+        return NextResponse.json({ error: error.message }, { status: error.code === "P0002" ? 404 : 400 });
+      }
+      console.error("Could not update meeting details:", error);
+      return NextResponse.json({ error: "Could not save the meeting details." }, { status: 500 });
+    }
+    sendQueuedEmailsSoon();
+    return NextResponse.json({ success: true, meetingDetails });
+  }
+
+  await resolveMyStaleSessions(supabase);
   const { data: status, error } = await supabase.rpc("act_on_session", {
     p_session_id: sessionId,
     p_action: action as SessionAction,
@@ -140,5 +170,6 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: "Could not update the session." }, { status: 500 });
   }
 
+  sendQueuedEmailsSoon();
   return NextResponse.json({ success: true, status });
 }

@@ -17,5 +17,6 @@ export async function GET(request: Request) {
     }
   }
 
-  return NextResponse.redirect(new URL("/auth/confirmation-error", url.origin));
+  const failure = next.startsWith("/reset-password") ? "/forgot-password?expired=1" : "/auth/confirmation-error";
+  return NextResponse.redirect(new URL(failure, url.origin));
 }

@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { Person, PublicTeacher } from "./data";
+import type { PublicTeacher } from "./data";
+import { RatingSummary } from "./ratings";
 
 const navItems = [
   { href: "/", label: "Overview", icon: "grid" },
@@ -47,7 +48,7 @@ export function Icon({ name, size = 19 }: { name: string; size?: number }) {
   return <svg {...common}>{paths[name] ?? paths.clock}</svg>;
 }
 
-export function Avatar({ image, src, name, size = "md" }: { image?: string; src?: string; name: string; size?: "sm" | "md" | "lg" }) {
+export function Avatar({ src, name, size = "md" }: { src?: string; name: string; size?: "sm" | "md" | "lg" }) {
   const initials = name
     .split(" ")
     .map((part) => part[0])
@@ -57,40 +58,33 @@ export function Avatar({ image, src, name, size = "md" }: { image?: string; src?
 
   return (
     <span className={`avatar avatar-${size}`} title={name}>
-      {src || image ? <img src={src ?? `https://images.unsplash.com/${image}?auto=format&fit=crop&w=96&q=75`} alt="" /> : <span className="avatar-initials">{initials}</span>}
+      {src ? <img src={src} alt="" /> : <span className="avatar-initials">{initials}</span>}
     </span>
   );
 }
 
-export function TeacherCard({ person }: { person: Person | PublicTeacher }) {
-  const isPublicTeacher = "teaching_skills" in person;
-  const name = isPublicTeacher ? person.full_name : person.name;
-  const skill = isPublicTeacher ? person.teaching_skills.join(" · ") : person.skill;
-  const learningSkills = isPublicTeacher ? person.learning_skills.join(", ") : person.swap;
+export function TeacherCard({ person }: { person: PublicTeacher }) {
+  const name = person.full_name;
+  const skill = person.teaching_skills.join(" · ");
+  const learningSkills = person.learning_skills.join(", ");
 
   return (
     <article className="teacher-card">
       <div className="teacher-top">
-        <Avatar image={isPublicTeacher ? undefined : person.image} src={isPublicTeacher ? person.avatar_url : undefined} name={name} size="md" />
+        <Avatar src={person.avatar_url || undefined} name={name} size="md" />
         <div>
           <strong>{name}</strong>
           <span>{skill}</span>
+          <span className="teacher-rating-line"><RatingSummary average={person.rating_average} count={person.rating_count} /></span>
         </div>
       </div>
-      {isPublicTeacher ? (
-        <p>{person.bio || `Based in ${person.location || person.timezone}. ${person.availability ? `Available: ${person.availability}.` : ""}`}</p>
-      ) : (
-        <div className="teacher-meta">
-          <span>★ {person.rating}</span>
-          <span>{person.hours}</span>
-        </div>
-      )}
+      <p>{person.bio || `Based in ${person.location || person.timezone}. ${person.availability ? `Available: ${person.availability}.` : ""}`}</p>
       <p>Open to swap for: {learningSkills || "Open to learning"}</p>
       <div className="teacher-actions">
         <Link className="button button-secondary small-button" href={`/teacher/${person.id}`}>View profile</Link>
         <Link
           className="button button-primary small-button"
-          href={`/book?teacher=${encodeURIComponent(person.id)}&skill=${encodeURIComponent(isPublicTeacher ? person.teaching_skills[0] ?? "" : person.skill.split(" · ")[0])}`}
+          href={`/book?teacher=${encodeURIComponent(person.id)}&skill=${encodeURIComponent(person.teaching_skills[0] ?? "")}`}
         >
           Book
         </Link>
@@ -99,7 +93,45 @@ export function TeacherCard({ person }: { person: Person | PublicTeacher }) {
   );
 }
 
-export function AppShell({ children, title }: { children: ReactNode; title: string }) {
+function cityFromTimeZone(timeZone: string) {
+  const city = timeZone.split("/").pop() ?? timeZone;
+  return city.replaceAll("_", " ");
+}
+
+/** The viewer's current local time. Renders nothing until mounted so prerendering never reads the clock. */
+function LocalClock() {
+  const [now, setNow] = useState<Date | null>(null);
+
+  useEffect(() => {
+    const tick = () => setNow(new Date());
+    const firstTick = window.setTimeout(tick, 0);
+    const timer = window.setInterval(tick, 30_000);
+    return () => {
+      window.clearTimeout(firstTick);
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  if (!now) return null;
+  const { timeZone } = Intl.DateTimeFormat().resolvedOptions();
+  const time = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(now);
+  return (
+    <span className="top-time" title={`Your local time (${timeZone})`}>
+      <Icon name="clock" size={16} /> {cityFromTimeZone(timeZone)}, {time}
+    </span>
+  );
+}
+
+export function AppShell({
+  children,
+  title,
+  allowIncompleteOnboarding = false,
+}: {
+  children: ReactNode;
+  title: string;
+  /** Set only by the onboarding page, which incomplete members are sent to. */
+  allowIncompleteOnboarding?: boolean;
+}) {
   const router = useRouter();
   const [userName, setUserName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
@@ -113,6 +145,8 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
     creditActivity: true,
   });
   const [notificationError, setNotificationError] = useState("");
+  const [teachingRequests, setTeachingRequests] = useState(0);
+  const [showFairness, setShowFairness] = useState(false);
   const [openMenu, setOpenMenu] = useState<"notifications" | "profile" | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState("");
@@ -144,8 +178,23 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
         }
 
         const data = await response.json();
+        // Members must finish onboarding before using the app. Admins are exempt
+        // so operator accounts don't need teaching and learning skills.
+        if (data?.user && !data.user.onboardingComplete && data.user.role !== "admin" && !allowIncompleteOnboarding) {
+          router.replace("/onboarding");
+          return;
+        }
         if (data?.user?.name) {
           setUserName(data.user.name);
+        }
+        const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (data?.user && browserZone && data.user.notificationTimeZone !== browserZone) {
+          // Keep email times in the member's own time zone. Best effort only.
+          void fetch("/api/profile/time-zone", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ timeZone: browserZone }),
+          }).catch(() => undefined);
         }
         const loadedUserId = data?.user?.id ?? "";
         setUserId(loadedUserId);
@@ -169,7 +218,7 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
     }
 
     loadSession();
-  }, [router]);
+  }, [allowIncompleteOnboarding, router]);
 
   useEffect(() => {
     async function loadNotifications() {
@@ -181,6 +230,7 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
           throw new Error(data.error || "Unable to load notifications.");
         }
         setNotifications(data.notifications);
+        setTeachingRequests(Number(data.teachingRequests) || 0);
       } catch (error) {
         setNotificationError(error instanceof Error ? error.message : "Unable to load notifications.");
       }
@@ -242,7 +292,9 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
             >
               <Icon name={icon} />
               <span>{label}</span>
-              {href === "/profile" && <span className="nav-count">2</span>}
+              {href === "/teacher" && teachingRequests > 0 && (
+                <span className="nav-count" aria-label={`${teachingRequests} request${teachingRequests === 1 ? "" : "s"} waiting`}>{teachingRequests}</span>
+              )}
             </Link>
           ))}
         </nav>
@@ -251,7 +303,22 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
           <div className="note-icon"><Icon name="shield" size={17} /></div>
           <strong>Time is the only currency here.</strong>
           <p>No money changes hands. Every hour is worth the same.</p>
-          <button className="text-link" type="button">How fairness works <Icon name="arrow" size={14} /></button>
+          <button
+            className="text-link"
+            type="button"
+            aria-expanded={showFairness}
+            aria-controls="fairness-details"
+            onClick={() => setShowFairness((current) => !current)}
+          >
+            {showFairness ? "Hide details" : "How fairness works"} <Icon name="arrow" size={14} />
+          </button>
+          {showFairness && (
+            <ul className="side-note-details" id="fairness-details">
+              <li>One hour of any skill is one time credit.</li>
+              <li>Credits are held when you book and go to the teacher once you both finish the session.</li>
+              <li>Declined, cancelled, or missed sessions return your credits automatically.</li>
+            </ul>
+          )}
         </div>
 
         <div className="sidebar-bottom">
@@ -267,7 +334,7 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
             <div className="breadcrumb"><span>My space</span><b>/</b><strong>{title}</strong></div>
           </div>
           <div className="top-actions" ref={topActionsRef}>
-            <span className="top-time"><Icon name="clock" size={16} /> Lagos, 3:42 PM</span>
+            <LocalClock />
             <div className="header-menu-wrap">
               <button
                 className="icon-button notification"

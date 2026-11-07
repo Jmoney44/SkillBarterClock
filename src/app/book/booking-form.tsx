@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type { PublicTeacher } from "../data";
 import { AppShell, Avatar, Icon } from "../site";
+import SlotPicker from "./slot-picker";
 
 function toLocalDateTime(date: Date) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
@@ -26,10 +27,31 @@ export default function BookingForm({
   const [minimumDateTime] = useState(() => toLocalDateTime(new Date(Date.now() + 60 * 60 * 1000)));
   const [durationHours, setDurationHours] = useState(1.5);
   const [note, setNote] = useState("");
+  const [meetingDetails, setMeetingDetails] = useState("");
   const [balance, setBalance] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  // null while loading; true when the teacher has weekly hours and learners pick from open slots.
+  const [teacherHasHours, setTeacherHasHours] = useState<boolean | null>(null);
+  const [slotStart, setSlotStart] = useState("");
+
+  useEffect(() => {
+    if (!teacherId) return;
+    let active = true;
+    fetch(`/api/availability?userId=${encodeURIComponent(teacherId)}`, { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!active) return;
+        setSlotStart("");
+        // If hours can't be loaded, fall back to the free picker; the server still enforces the teacher's hours.
+        setTeacherHasHours(response.ok && Array.isArray(data.windows) && data.windows.length > 0);
+      })
+      .catch(() => {
+        if (active) setTeacherHasHours(false);
+      });
+    return () => { active = false; };
+  }, [teacherId]);
 
   useEffect(() => {
     async function loadBookingDetails() {
@@ -72,12 +94,13 @@ export default function BookingForm({
   const selectedTeacher = teachers.find((teacher) => teacher.id === teacherId);
   const skills = selectedTeacher?.teaching_skills ?? [];
   const scheduledLabel = useMemo(() => {
-    if (!scheduledAt) return "Choose a date and time";
-    const date = new Date(scheduledAt);
+    const chosen = teacherHasHours ? slotStart : scheduledAt;
+    if (!chosen) return "Choose a date and time";
+    const date = new Date(chosen);
     return Number.isNaN(date.getTime())
       ? "Choose a date and time"
       : new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeStyle: "short" }).format(date);
-  }, [scheduledAt]);
+  }, [scheduledAt, slotStart, teacherHasHours]);
 
   async function createBooking(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -90,9 +113,10 @@ export default function BookingForm({
         body: JSON.stringify({
           teacherId,
           skill,
-          scheduledAt: new Date(scheduledAt).toISOString(),
+          scheduledAt: teacherHasHours ? slotStart : new Date(scheduledAt).toISOString(),
           durationHours,
           note,
+          meetingDetails,
         }),
       });
       const data = await response.json();
@@ -146,6 +170,7 @@ export default function BookingForm({
                   onChange={(event) => {
                     const nextTeacher = teachers.find((teacher) => teacher.id === event.target.value);
                     setTeacherId(event.target.value);
+                    setTeacherHasHours(null);
                     setSkill(nextTeacher?.teaching_skills[0] ?? "");
                   }}
                 >
@@ -163,17 +188,6 @@ export default function BookingForm({
               </label>
 
               <label className="field-wrap">
-                <span>Session date and time</span>
-                <input
-                  type="datetime-local"
-                  required
-                  min={minimumDateTime}
-                  value={scheduledAt}
-                  onChange={(event) => setScheduledAt(event.target.value)}
-                />
-              </label>
-
-              <label className="field-wrap">
                 <span>Length</span>
                 <select
                   value={durationHours}
@@ -184,6 +198,28 @@ export default function BookingForm({
                   ))}
                 </select>
               </label>
+
+              {teacherHasHours ? (
+                <div className="field-wrap">
+                  <span>Choose an open time</span>
+                  <SlotPicker key={teacherId} teacherId={teacherId} durationHours={durationHours} value={slotStart} onChange={setSlotStart} />
+                </div>
+              ) : (
+                <label className="field-wrap">
+                  <span>Session date and time</span>
+                  <input
+                    type="datetime-local"
+                    required
+                    min={minimumDateTime}
+                    value={scheduledAt}
+                    onChange={(event) => setScheduledAt(event.target.value)}
+                  />
+                  {teacherHasHours === false && (
+                    <small className="availability-off">This teacher hasn’t set weekly hours yet. Mention a few options in your note in case this time doesn’t suit them.</small>
+                  )}
+                </label>
+              )}
+
             </div>
 
             {selectedTeacher && (
@@ -235,7 +271,19 @@ export default function BookingForm({
                 />
               </label>
 
-              <button className="button button-primary" type="submit" disabled={submitting || !teacherId || !skill} style={{ width: "100%" }}>
+              <label className="field-wrap meeting-field" style={{ marginBottom: 16 }}>
+                <span>Meeting details <small>(optional)</small></span>
+                <textarea
+                  rows={2}
+                  maxLength={500}
+                  value={meetingDetails}
+                  onChange={(event) => setMeetingDetails(event.target.value)}
+                  placeholder="Video call link, phone number, or meeting place"
+                />
+                <small>Only you and your teacher can see this. Either of you can change it later from the session room.</small>
+              </label>
+
+              <button className="button button-primary" type="submit" disabled={submitting || !teacherId || !skill || teacherHasHours === null || (teacherHasHours && !slotStart)} style={{ width: "100%" }}>
                 {submitting ? "Sending request…" : "Request session"}
               </button>
               <p className="clock-footnote">Credits are held now and returned if the request is declined or cancelled before it starts.</p>

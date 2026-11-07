@@ -37,10 +37,10 @@ const timezones = [
 export default function OnboardingPage() {
   const router = useRouter();
   const [step, setStep] = useState(0);
-  const [teach, setTeach] = useState<string[]>(["Excel", "Canva & design"]);
-  const [learn, setLearn] = useState<string[]>(["Yoruba", "French"]);
+  const [teach, setTeach] = useState<string[]>([]);
+  const [learn, setLearn] = useState<string[]>([]);
   const [timezone, setTimezone] = useState("Lagos (UTC+1)");
-  const [availability, setAvailability] = useState("Weeknights, 6:00–9:00 PM");
+  const [availability, setAvailability] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -97,6 +97,10 @@ export default function OnboardingPage() {
   const isFinalStep = step === 2;
 
   async function finishOnboarding() {
+    if (!availability.trim()) {
+      setError("Add when you’re usually available, for example “Weeknights, 6–9 PM”.");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
@@ -120,7 +124,7 @@ export default function OnboardingPage() {
   }
 
   return (
-    <AppShell title="Onboarding">
+    <AppShell title="Onboarding" allowIncompleteOnboarding>
       <div className="onboarding-wrap">
         <div className="onboarding-header">
           <div>
@@ -193,7 +197,13 @@ export default function OnboardingPage() {
 
                 <label className="field-wrap">
                   <span>Availability</span>
-                  <input value={availability} onChange={(event) => setAvailability(event.target.value)} />
+                  <input
+                    value={availability}
+                    onChange={(event) => setAvailability(event.target.value)}
+                    placeholder="For example, weeknights 6–9 PM or Saturday mornings"
+                    maxLength={120}
+                    required
+                  />
                 </label>
               </div>
             </>

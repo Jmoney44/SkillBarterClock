@@ -29,7 +29,10 @@ export default function LoginPage() {
         return;
       }
 
-      router.push("/");
+      // Return to the page the proxy sent them from, if it was a page in this app.
+      const requestedNext = new URLSearchParams(window.location.search).get("next");
+      const next = requestedNext?.startsWith("/") && !requestedNext.startsWith("//") ? requestedNext : "/";
+      router.push(data.user?.onboardingComplete || data.user?.role === "admin" ? next : "/onboarding");
       router.refresh();
     } catch {
       setError("We couldn’t reach the server. Please try again.");
@@ -80,7 +83,7 @@ export default function LoginPage() {
             </label>
 
             <label className="field-wrap" htmlFor="login-password">
-              <span>Password</span>
+              <span className="field-label-row">Password <Link href="/forgot-password" className="text-link">Forgot password?</Link></span>
               <input
                 id="login-password"
                 name="password"

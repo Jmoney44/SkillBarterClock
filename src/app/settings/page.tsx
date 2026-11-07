@@ -12,6 +12,8 @@ type SettingsProfile = {
   avatarUrl: string;
   role: "member" | "admin";
   timezone: string;
+  emailNotifications: boolean;
+  notificationTimeZone: string | null;
   createdAt: string;
 };
 
@@ -39,6 +41,14 @@ export default function SettingsPage() {
   const [passwordStatus, setPasswordStatus] = useState("");
   const [changingPassword, setChangingPassword] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [emailEnabled, setEmailEnabled] = useState(true);
+  const [emailStatus, setEmailStatus] = useState("");
+  const [savingEmail, setSavingEmail] = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -53,6 +63,7 @@ export default function SettingsPage() {
         if (!response.ok) throw new Error(data.error || "Unable to load your account settings.");
         if (!active) return;
         setProfile(data.user);
+        setEmailEnabled(data.user.emailNotifications ?? true);
         try {
           const stored = window.localStorage.getItem(`notification-preferences:${data.user.id}`);
           if (stored) setPreferences({ ...defaultPreferences, ...JSON.parse(stored) });
@@ -84,6 +95,51 @@ export default function SettingsPage() {
     } catch {
       setError("Could not save your notification preferences on this device.");
       setSaved(false);
+    }
+  }
+
+  async function updateEmailNotifications(enabled: boolean) {
+    setSavingEmail(true);
+    setEmailStatus("");
+    setEmailEnabled(enabled);
+    try {
+      const response = await fetch("/api/settings/notifications", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailNotifications: enabled }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not save your email preference.");
+      setEmailStatus(enabled ? "Email notifications are on." : "Email notifications are off.");
+    } catch (emailError) {
+      setEmailEnabled(!enabled);
+      setEmailStatus(emailError instanceof Error ? emailError.message : "Could not save your email preference.");
+    } finally {
+      setSavingEmail(false);
+    }
+  }
+
+  async function deleteAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (deleteConfirmation !== "DELETE") {
+      setDeleteError("Type DELETE to confirm.");
+      return;
+    }
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      const response = await fetch("/api/account", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: deletePassword, confirmation: deleteConfirmation }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not delete your account.");
+      router.replace("/account-deleted");
+      router.refresh();
+    } catch (accountError) {
+      setDeleteError(accountError instanceof Error ? accountError.message : "Could not delete your account.");
+      setDeleting(false);
     }
   }
 
@@ -170,6 +226,26 @@ export default function SettingsPage() {
               </div>
             </section>
 
+            <section className="settings-card">
+              <div className="settings-section-heading">
+                <span className="settings-section-icon"><Icon name="message" size={17} /></span>
+                <div><h2>Email notifications</h2><p>Emails to {profile.email} about your sessions and reviews.</p></div>
+              </div>
+              <div className="settings-preference-list">
+                <label className="settings-preference">
+                  <span>
+                    <b>Email me about my sessions</b>
+                    <small>New requests, confirmations, cancellations, meeting details, a reminder an hour before each session, and new reviews.</small>
+                  </span>
+                  <input type="checkbox" checked={emailEnabled} disabled={savingEmail} onChange={(event) => void updateEmailNotifications(event.target.checked)} />
+                </label>
+              </div>
+              <div className="settings-save-row">
+                {emailStatus && <span className="form-success" role="status">{emailStatus}</span>}
+                <small className="availability-off" style={{ fontSize: 12 }}>Times in emails use your time zone{profile.notificationTimeZone ? ` (${profile.notificationTimeZone.replaceAll("_", " ")})` : ""}.</small>
+              </div>
+            </section>
+
             <form className="settings-card" onSubmit={savePreferences}>
               <div className="settings-section-heading">
                 <span className="settings-section-icon"><Icon name="bell" size={17} /></span>
@@ -224,13 +300,58 @@ export default function SettingsPage() {
                 <button className="button button-secondary" type="submit" disabled={changingPassword}>{changingPassword ? "Updating…" : "Update password"}</button>
               </form>
             </section>
+            <section className="settings-card settings-danger-card">
+              <div className="settings-section-heading">
+                <span className="settings-section-icon"><Icon name="close" size={17} /></span>
+                <div><h2>Delete account</h2><p>Permanently remove your account. This can’t be undone.</p></div>
+              </div>
+              {!showDelete ? (
+                <div className="settings-action-row">
+                  <div>
+                    <b>Delete my account</b>
+                    <span>
+                      {profile.role === "admin"
+                        ? "Admin accounts can’t be deleted here. Ask another admin to change your role to member first."
+                        : "Your profile, photo, skills, hours, and wallet history will be removed."}
+                    </span>
+                  </div>
+                  {profile.role !== "admin" && (
+                    <button className="button button-quiet danger-button" type="button" onClick={() => setShowDelete(true)}>Delete account…</button>
+                  )}
+                </div>
+              ) : (
+                <form className="settings-delete-form" onSubmit={deleteAccount}>
+                  <ul className="settings-delete-list">
+                    <li>Upcoming and requested sessions are cancelled, and learners get their credits back.</li>
+                    <li>A session already in progress is completed, so the teacher is paid.</li>
+                    <li>Your remaining time credits are lost.</li>
+                    <li>Partners keep their past sessions with you, shown as “Deleted member”. Reviews you wrote stay, shown as “Former member”.</li>
+                  </ul>
+                  <label className="field-wrap" htmlFor="delete-password">
+                    <span>Current password</span>
+                    <input id="delete-password" type="password" autoComplete="current-password" value={deletePassword} onChange={(event) => setDeletePassword(event.target.value)} required />
+                  </label>
+                  <label className="field-wrap" htmlFor="delete-confirmation">
+                    <span>Type DELETE to confirm</span>
+                    <input id="delete-confirmation" value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} autoComplete="off" required />
+                  </label>
+                  {deleteError && <p className="form-error" role="alert">{deleteError}</p>}
+                  <div className="settings-save-row">
+                    <button className="button button-quiet" type="button" disabled={deleting} onClick={() => { setShowDelete(false); setDeleteError(""); setDeletePassword(""); setDeleteConfirmation(""); }}>Keep my account</button>
+                    <button className="button button-primary danger-button" type="submit" disabled={deleting || deleteConfirmation !== "DELETE" || !deletePassword}>
+                      {deleting ? "Deleting…" : "Permanently delete account"}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </section>
           </div>
 
           <aside className="settings-aside">
             <section className="settings-card settings-help-card">
               <span className="settings-section-icon"><Icon name="clock" size={17} /></span>
               <h2>Account at a glance</h2>
-              <p>Your time credits stay safe and are only transferred when a session is completed by both people.</p>
+              <p>Credits for a session are held when it’s booked. They go to the teacher once the session is completed, and come back to you if it’s declined, cancelled, or never starts.</p>
               <Link href="/wallet" className="text-link">View time wallet <Icon name="arrow" size={14} /></Link>
             </section>
             <section className="settings-card settings-logout-card">

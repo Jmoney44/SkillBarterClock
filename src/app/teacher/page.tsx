@@ -5,6 +5,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { PublicProfile } from "@/lib/supabase/profile";
 import { AppShell, Avatar, Icon } from "../site";
+import { MeetingDetailsText } from "../meeting-details";
+import { RatingSummary, ReviewList, type TeacherReview } from "../ratings";
+import { startAvailability } from "@/lib/session-rules";
 
 type TeachingSession = {
   id: string;
@@ -13,6 +16,7 @@ type TeachingSession = {
   duration_hours: number | string;
   status: "requested" | "confirmed" | "in_progress" | "completed" | "cancelled";
   learner_note: string;
+  meeting_details: string;
   role: "learner" | "teacher";
   partner_name: string;
 };
@@ -74,6 +78,36 @@ export default function TeacherDashboardPage() {
   const [busySessionId, setBusySessionId] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  // Null until the first client tick, so prerendering never reads the clock.
+  const [now, setNow] = useState<number | null>(null);
+  const [rating, setRating] = useState<{ average: number | null; count: number; reviews: TeacherReview[] } | null>(null);
+  const profileId = profile?.id;
+
+  useEffect(() => {
+    if (!profileId) return;
+    let active = true;
+    fetch(`/api/reviews?teacherId=${encodeURIComponent(profileId)}`, { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (active && response.ok) {
+          setRating({ average: data.ratingAverage, count: data.ratingCount, reviews: data.reviews ?? [] });
+        }
+      })
+      .catch(() => {
+        // Reviews are supplementary here; the rest of the dashboard still works.
+      });
+    return () => { active = false; };
+  }, [profileId]);
+
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    const firstTick = window.setTimeout(tick, 0);
+    const timer = window.setInterval(tick, 30_000);
+    return () => {
+      window.clearTimeout(firstTick);
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     const data = await fetchTeachingData();
@@ -157,7 +191,10 @@ export default function TeacherDashboardPage() {
           <h1>Teaching dashboard</h1>
           <p className="lead">Manage learner requests and keep your exchanges moving.</p>
         </div>
-        <Link href="/profile/edit" className="button button-secondary"><Icon name="settings" size={16} /> Edit teaching profile</Link>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+          <Link href="/teacher/availability" className="button button-primary"><Icon name="calendar" size={16} /> Set weekly hours</Link>
+          <Link href="/profile/edit" className="button button-secondary"><Icon name="settings" size={16} /> Edit teaching profile</Link>
+        </div>
       </div>
 
       {error && <p className="form-error" role="alert">{error}</p>}
@@ -173,6 +210,7 @@ export default function TeacherDashboardPage() {
               <span className="eyebrow">THANK YOU FOR SHARING YOUR TIME</span>
               <h2>{profile.name ? `Hello, ${profile.name.split(" ")[0]}.` : "Hello, teacher."}</h2>
               <p>{profile.teaching.length ? `You’re offering ${profile.teaching.join(", ")}.` : "Add the skills you’re ready to teach so learners can find you."}</p>
+              {rating && <RatingSummary average={rating.average} count={rating.count} />}
             </div>
             <Link className="text-link" href="/profile">View your profile <Icon name="arrow" size={14} /></Link>
           </section>
@@ -198,6 +236,7 @@ export default function TeacherDashboardPage() {
                       <div className="teacher-session-title"><b>{session.skill}</b><span className="admin-badge">New request</span></div>
                       <span>{session.partner_name} · {formatDate(session.scheduled_at)}</span>
                       <small>{Number(session.duration_hours)} hour{Number(session.duration_hours) === 1 ? "" : "s"} · {Number(session.duration_hours).toFixed(1)} TC to earn</small>
+                      {session.meeting_details && <small>Meet: <MeetingDetailsText text={session.meeting_details} /></small>}
                       {session.learner_note && <p className="teacher-learner-note">“{session.learner_note}”</p>}
                     </div>
                     <div className="teacher-session-actions">
@@ -225,17 +264,21 @@ export default function TeacherDashboardPage() {
             </div>
             {upcoming.length ? (
               <div className="teacher-session-list">
-                {upcoming.map((session) => (
+                {upcoming.map((session) => {
+                  const start = startAvailability(session, now);
+                  return (
                   <article className="teacher-session-card" key={session.id}>
                     <Avatar name={session.partner_name} />
                     <div className="teacher-session-main">
                       <div className="teacher-session-title"><b>{session.skill}</b><span className={`admin-badge ${session.status === "in_progress" ? "complete" : ""}`}>{statusLabel(session.status)}</span></div>
                       <span>Learning with {session.partner_name} · {formatDate(session.scheduled_at)}</span>
                       <small>{Number(session.duration_hours)} hour{Number(session.duration_hours) === 1 ? "" : "s"}</small>
+                      <small>{session.meeting_details ? <>Meet: <MeetingDetailsText text={session.meeting_details} /></> : "No meeting details yet. Add them in the session room."}</small>
+                      {session.status === "confirmed" && start.hint && <small>{start.hint}</small>}
                     </div>
                     <div className="teacher-session-actions">
                       {session.status === "confirmed" && (
-                        <button className="button button-primary small-button" type="button" disabled={busySessionId === session.id} onClick={() => void actOnSession(session.id, "start")}>Start session</button>
+                        <button className="button button-primary small-button" type="button" disabled={busySessionId === session.id || !start.canStart} title={start.hint || undefined} onClick={() => void actOnSession(session.id, "start")}>Start session</button>
                       )}
                       {session.status === "in_progress" && (
                         <button className="button button-primary small-button" type="button" disabled={busySessionId === session.id} onClick={() => void actOnSession(session.id, "end")}>Finish session</button>
@@ -243,12 +286,28 @@ export default function TeacherDashboardPage() {
                       <Link className="button button-secondary small-button" href={`/session?id=${encodeURIComponent(session.id)}`}>Open room</Link>
                     </div>
                   </article>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <div className="teacher-empty-state compact">
                 <span><Icon name="calendar" size={18} /></span>
                 <div><b>No sessions on your calendar</b><p>Accepted sessions will show up here with the time and learner details.</p></div>
+              </div>
+            )}
+          </section>
+
+          <section className="teacher-dashboard-section">
+            <div className="section-heading">
+              <div><div className="eyebrow">FROM YOUR LEARNERS</div><h3>Recent reviews</h3></div>
+              {rating && <RatingSummary average={rating.average} count={rating.count} />}
+            </div>
+            {rating?.reviews.length ? (
+              <ReviewList reviews={rating.reviews.slice(0, 5)} />
+            ) : (
+              <div className="teacher-empty-state compact">
+                <span><Icon name="message" size={18} /></span>
+                <div><b>No reviews yet</b><p>Learners can rate a session once it’s completed. Reviews appear on your public profile.</p></div>
               </div>
             )}
           </section>

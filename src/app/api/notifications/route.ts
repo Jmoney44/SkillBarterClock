@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { resolveMyStaleSessions } from "@/lib/supabase/sessions";
 
 type SessionNotificationSource = {
   id: string;
+  teacher_id: string;
   skill: string;
   status: string;
   scheduled_at: string;
@@ -25,6 +27,7 @@ export async function GET() {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
+  await resolveMyStaleSessions(supabase);
   const [announcementResult, sessionResult, walletResult] = await Promise.all([
     supabase
       .from("admin_announcements")
@@ -55,7 +58,11 @@ export async function GET() {
     href: "/",
   }));
 
-  const sessions = ((sessionResult.data ?? []) as SessionNotificationSource[])
+  const allSessions = (sessionResult.data ?? []) as SessionNotificationSource[];
+  const teachingRequests = allSessions
+    .filter((session) => session.status === "requested" && session.teacher_id === user.id)
+    .length;
+  const sessions = allSessions
     .slice(0, 8)
     .map((session) => ({
       id: `session-${session.id}-${session.status}`,
@@ -79,5 +86,5 @@ export async function GET() {
     .sort((first, second) => new Date(second.createdAt).getTime() - new Date(first.createdAt).getTime())
     .slice(0, 12);
 
-  return NextResponse.json({ notifications });
+  return NextResponse.json({ notifications, teachingRequests });
 }
