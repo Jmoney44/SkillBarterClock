@@ -80,7 +80,7 @@ export default function LoginPage() {
             </label>
 
             <label className="field-wrap" htmlFor="login-password">
-              <span>Password</span>
+              <span className="field-label-row">Password <Link href="/forgot-password" className="text-link">Forgot password?</Link></span>
               <input
                 id="login-password"
                 name="password"

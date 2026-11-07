@@ -422,3 +422,7 @@ h1 { margin: 7px 0 3px; font-family: var(--font-display), Georgia, serif; font-s
 .meeting-field small { color: var(--muted); font-weight: 400; }
 .meeting-editor { display: grid; gap: 8px; margin: 12px 0 14px; }
 .meeting-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Login: forgot-password link beside the password label */
+.field-label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.field-label-row .text-link { font-size: 10px; font-weight: 600; }

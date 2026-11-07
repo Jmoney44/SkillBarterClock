@@ -12,13 +12,22 @@ Skill Barter Clock is a time-credit skill exchange prototype built with Next.js,
    - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` to the project's publishable key. A legacy anon key can be used under `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
 4. In Supabase Auth URL Configuration, set the Site URL to your app URL and add the matching `/auth/callback` URL to the allowed redirect URLs.
 5. If email confirmation is enabled, configure the Supabase confirmation email to use its `{{ .ConfirmationURL }}` template value. The app's signup flow displays a check-your-email message and the callback completes the session.
-6. Start the app:
+6. For password reset emails, open Supabase Auth → Emails → Reset Password and change the link to:
+
+   ```html
+   <a href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery&next=/reset-password">Reset your password</a>
+   ```
+
+   This lets members open the link on any device. The default `{{ .ConfirmationURL }}` link also works, through `/auth/callback`, but only in the same browser that requested the reset.
+7. Start the app:
 
    ```bash
    npm run dev
    ```
 
 The app uses Supabase Auth for accounts and cookie-based sessions. User-owned profile rows are protected by row-level security. Credit balance fields are not client-updatable. The notification menu combines session and time-credit activity with announcements published by administrators; notification preferences and read status are saved in the member's browser.
+
+Members who forget their password can use **Forgot password?** on the login page. They get the same "check your email" message whether or not the address has an account. The emailed link signs them in on `/reset-password`, where they choose a new password. Expired or used links return them to `/forgot-password` to request a new one. Supabase's own email rate limits apply.
 
 Members can upload a JPEG, PNG, or WebP profile photo up to 5 MB from Profile → Edit profile. The image is stored in the public `avatars` bucket; upload and removal are restricted to the signed-in member's own storage folder. Rerun the updated schema if the profile table was already created.
 
