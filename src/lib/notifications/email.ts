@@ -20,7 +20,14 @@ export async function sendEmail(email: OutgoingEmail): Promise<{ ok: true } | { 
     const response = await fetch(`${process.env.RESEND_API_URL ?? "https://api.resend.com"}/emails`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ from, to: [email.to], subject: email.subject, text: email.text, html: email.html }),
+      body: JSON.stringify({
+        from,
+        to: [email.to],
+        subject: email.subject,
+        text: email.text,
+        html: email.html,
+        ...(process.env.SUPPORT_EMAIL ? { reply_to: process.env.SUPPORT_EMAIL } : {}),
+      }),
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) {

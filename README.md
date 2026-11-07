@@ -79,6 +79,7 @@ Members get emails about their sessions:
 - **The other person:** a cancellation, or a change to the meeting details.
 - **Both:** a reminder about an hour before the session, and notice when a session closes as not started or auto-completed.
 - **Teacher:** a new review.
+- **Suspended or restored members:** a notice that their account was suspended (with the admin's reason) or restored. These are sent even if the member turned emails off.
 
 Times are shown in each member's own time zone, which the app records from their browser. Members can turn emails off in Settings.
 
@@ -87,7 +88,7 @@ Database triggers queue each email in `notification_outbox`, including events fr
 To turn it on:
 
 1. Create a Resend account, verify your sending domain, and create an API key.
-2. Set `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`, `EMAIL_FROM`, `CRON_SECRET`, and `NEXT_PUBLIC_SITE_URL` (see `.env.example`). The service role key is used only on the server, by the email sender.
+2. Set `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`, `EMAIL_FROM`, `CRON_SECRET`, and `NEXT_PUBLIC_SITE_URL` (see `.env.example`). Optionally set `SUPPORT_EMAIL` as the reply-to address and the contact given in suspension notices. The service role key is used only on the server, by the email sender.
 3. Rerun `supabase/schema.sql`.
 4. Call `GET /api/cron/notifications` with `Authorization: Bearer <CRON_SECRET>` every 5–10 minutes. Each call also resolves overdue sessions and queues reminders. For example, with Supabase's `pg_cron` and `pg_net` extensions:
 

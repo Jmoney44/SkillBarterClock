@@ -18,6 +18,8 @@ export type ClaimedNotification = {
   partner_name: string | null;
   review_rating: number | null;
   review_comment: string | null;
+  recipient_suspended: boolean;
+  suspension_reason: string | null;
 };
 
 type Rendered = { subject: string; text: string; html: string } | { skip: string };
@@ -41,8 +43,53 @@ function formatWhen(iso: string, timeZone: string) {
 
 const activeStatuses = ["requested", "confirmed", "in_progress"];
 
+function contactLine() {
+  const support = process.env.SUPPORT_EMAIL;
+  return support
+    ? `If you think this is a mistake, contact the community team at ${support}.`
+    : "If you think this is a mistake, reply to this email to contact the community team.";
+}
+
+function wrap(firstName: string, subject: string, lines: string[], action: { label: string; url: string } | null, footer: string) {
+  const text = [`Hi ${firstName},`, "", ...lines, ...(action ? ["", `${action.label}: ${action.url}`] : []), "", "Skill Barter Clock", footer].join("\n");
+  const html = `<!doctype html><html><body style="margin:0;padding:24px;background:#f7f4ee;font-family:Arial,Helvetica,sans-serif;color:#24332f">
+<div style="max-width:520px;margin:0 auto;background:#fffdf9;border:1px solid #e9e4da;border-radius:10px;padding:24px">
+<p style="margin:0 0 16px;font-size:12px;letter-spacing:.08em;color:#0f766e;font-weight:bold">SKILL BARTER CLOCK</p>
+<p style="margin:0 0 12px">Hi ${escapeHtml(firstName)},</p>
+${lines.map((line) => `<p style="margin:0 0 10px;line-height:1.5">${escapeHtml(line)}</p>`).join("\n")}
+${action ? `<p style="margin:20px 0"><a href="${escapeHtml(action.url)}" style="display:inline-block;background:#c0573f;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:bold">${escapeHtml(action.label)}</a></p>` : ""}
+<p style="margin:16px 0 0;font-size:12px;color:#6b7a75">${escapeHtml(footer)}</p>
+</div></body></html>`;
+  return { subject, text, html };
+}
+
+/** Account notices: sent even when activity emails are turned off. */
+function renderAccountNotice(row: ClaimedNotification, siteUrl: string, firstName: string): Rendered {
+  const footer = "This is a notice about your Skill Barter Clock account.";
+  if (row.kind === "account_suspended") {
+    if (!row.recipient_suspended) return { skip: "no_longer_suspended" };
+    return wrap(firstName, "Your Skill Barter Clock account has been suspended", [
+      "The community team has suspended your account, so you can’t sign in, book, or teach sessions for now.",
+      ...(row.suspension_reason ? [`Reason: ${row.suspension_reason}`] : []),
+      "Any requested or upcoming sessions were cancelled, and learners’ held credits were returned.",
+      contactLine(),
+    ], null, footer);
+  }
+  if (row.recipient_suspended) return { skip: "suspended_again" };
+  return wrap(firstName, "Your Skill Barter Clock account has been restored", [
+    "The community team has lifted the suspension on your account. You can sign in, book, and teach sessions again.",
+    "Sessions cancelled during the suspension aren’t restored, so book again if you still need them.",
+  ], { label: "Log in", url: `${siteUrl}/login` }, footer);
+}
+
 export function renderNotification(row: ClaimedNotification, siteUrl: string): Rendered {
   if (!row.recipient_email) return { skip: "no_email" };
+  const recipientFirstName = row.recipient_name.trim().split(" ")[0] || "there";
+  if (row.kind === "account_suspended" || row.kind === "account_reinstated") {
+    return renderAccountNotice(row, siteUrl, recipientFirstName);
+  }
+  // Suspended members get the suspension notice instead of per-session emails.
+  if (row.recipient_suspended) return { skip: "recipient_suspended" };
   if (!row.session_id || !row.scheduled_at) return { skip: "session_deleted" };
 
   const firstName = row.recipient_name.trim().split(" ")[0] || "there";

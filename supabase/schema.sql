@@ -1356,7 +1356,9 @@ create table if not exists public.notification_outbox (
     'session_auto_completed',
     'meeting_details_changed',
     'session_reminder',
-    'review_received'
+    'review_received',
+    'account_suspended',
+    'account_reinstated'
   )),
   session_id uuid references public.sessions (id) on delete cascade,
   created_at timestamptz not null default now(),
@@ -1366,6 +1368,16 @@ create table if not exists public.notification_outbox (
   skipped_reason text,
   last_error text
 );
+
+alter table public.notification_outbox
+  drop constraint if exists notification_outbox_kind_check;
+alter table public.notification_outbox
+  add constraint notification_outbox_kind_check check (kind in (
+    'session_requested', 'request_accepted', 'request_declined', 'request_expired',
+    'session_cancelled', 'session_not_started', 'session_auto_completed',
+    'meeting_details_changed', 'session_reminder', 'review_received',
+    'account_suspended', 'account_reinstated'
+  ));
 
 -- One unsent email per recipient, kind, and session: repeated changes collapse.
 create unique index if not exists notification_outbox_pending_idx
@@ -1512,7 +1524,9 @@ returns table (
   recipient_role text,
   partner_name text,
   review_rating smallint,
-  review_comment text
+  review_comment text,
+  recipient_suspended boolean,
+  suspension_reason text
 )
 language plpgsql
 security definer
@@ -1527,7 +1541,8 @@ begin
   from public.profiles p
   where p.id = o.recipient_id
     and o.sent_at is null
-    and not p.email_notifications;
+    and not p.email_notifications
+    and o.kind not in ('account_suspended', 'account_reinstated'); -- account notices always go out
 
   return query
   with batch as (
@@ -1564,7 +1579,9 @@ begin
     case when s.learner_id = c.recipient_id then 'learner' else 'teacher' end,
     partner.full_name,
     r.rating,
-    r.comment
+    r.comment,
+    rp.suspended_at is not null,
+    rp.suspension_reason
   from claimed c
   join public.profiles rp on rp.id = c.recipient_id
   join auth.users u on u.id = c.recipient_id
@@ -1799,6 +1816,7 @@ begin
   update public.profiles
   set suspended_at = now(), suspension_reason = btrim(p_reason)
   where id = p_user_id;
+  perform public.enqueue_notification(p_user_id, 'account_suspended', null);
 
   for v_session in
     select s.id from public.sessions s
@@ -1825,6 +1843,7 @@ begin
   end if;
   perform public.admin_log('unsuspend_member', p_reason, p_user_id);
   update public.profiles set suspended_at = null, suspension_reason = null where id = p_user_id;
+  perform public.enqueue_notification(p_user_id, 'account_reinstated', null);
 end;
 $$;
 

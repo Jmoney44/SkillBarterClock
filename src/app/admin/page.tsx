@@ -358,7 +358,7 @@ export default function AdminPage() {
                                   onClick={() => openAction({
                                     action: "unsuspend_member",
                                     title: `Unsuspend ${member.full_name}`,
-                                    description: "They’ll be able to sign in, book, and teach again, and will reappear in Explore.",
+                                    description: "They’ll be able to sign in, book, and teach again, and will reappear in Explore. They’ll be emailed that their account is restored.",
                                     confirmLabel: "Unsuspend",
                                     target: { memberId: member.id },
                                   })}
@@ -372,7 +372,7 @@ export default function AdminPage() {
                                   onClick={() => openAction({
                                     action: "suspend_member",
                                     title: `Suspend ${member.full_name}`,
-                                    description: "They’ll be signed out and blocked from signing in, booking, teaching, and reviewing, and hidden from Explore. Their requested and confirmed sessions are cancelled and learners refunded. Sessions already in progress are left for you to resolve.",
+                                    description: "They’ll be signed out and blocked from signing in, booking, teaching, and reviewing, and hidden from Explore. Their requested and confirmed sessions are cancelled and learners refunded. Sessions already in progress are left for you to resolve. They’ll be emailed that their account is suspended, including the reason you give here.",
                                     confirmLabel: "Suspend member",
                                     danger: true,
                                     target: { memberId: member.id },
