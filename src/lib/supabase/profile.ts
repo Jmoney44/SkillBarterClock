@@ -18,6 +18,8 @@ export type ProfileRecord = {
   role: "member" | "admin";
   credit_balance: number;
   pending_credits: number;
+  email_notifications: boolean;
+  notification_time_zone: string | null;
   created_at: string;
 };
 
@@ -37,6 +39,8 @@ export type PublicProfile = {
   role: "member" | "admin";
   balance: number;
   pending: number;
+  emailNotifications: boolean;
+  notificationTimeZone: string | null;
   createdAt: string;
 };
 
@@ -77,6 +81,8 @@ export function mapProfile(profile: ProfileRecord, email?: string, avatarUrl = "
     role: profile.role,
     balance: Number(profile.credit_balance),
     pending: Number(profile.pending_credits),
+    emailNotifications: profile.email_notifications ?? true,
+    notificationTimeZone: profile.notification_time_zone ?? null,
     createdAt: profile.created_at,
   };
 }

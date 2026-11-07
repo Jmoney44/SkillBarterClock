@@ -187,6 +187,15 @@ export function AppShell({
         if (data?.user?.name) {
           setUserName(data.user.name);
         }
+        const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (data?.user && browserZone && data.user.notificationTimeZone !== browserZone) {
+          // Keep email times in the member's own time zone. Best effort only.
+          void fetch("/api/profile/time-zone", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ timeZone: browserZone }),
+          }).catch(() => undefined);
+        }
         const loadedUserId = data?.user?.id ?? "";
         setUserId(loadedUserId);
         setAvatarUrl(data?.user?.avatarUrl ?? "");

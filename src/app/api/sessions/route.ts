@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { resolveMyStaleSessions } from "@/lib/supabase/sessions";
+import { sendQueuedEmailsSoon } from "@/lib/notifications/outbox";
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const actions = new Set(["accept", "decline", "start", "end", "cancel"]);
@@ -100,6 +101,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Could not create the session request." }, { status: 500 });
   }
 
+  sendQueuedEmailsSoon();
   return NextResponse.json({ success: true, sessionId }, { status: 201 });
 }
 
@@ -147,6 +149,7 @@ export async function PATCH(request: Request) {
       console.error("Could not update meeting details:", error);
       return NextResponse.json({ error: "Could not save the meeting details." }, { status: 500 });
     }
+    sendQueuedEmailsSoon();
     return NextResponse.json({ success: true, meetingDetails });
   }
 
@@ -167,5 +170,6 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: "Could not update the session." }, { status: 500 });
   }
 
+  sendQueuedEmailsSoon();
   return NextResponse.json({ success: true, status });
 }

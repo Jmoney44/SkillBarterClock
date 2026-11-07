@@ -1320,3 +1320,296 @@ with check (
 );
 
 grant select, insert on public.admin_announcements to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- Email notifications
+-- Database triggers queue emails in notification_outbox when sessions or
+-- reviews change (including changes made by resolve_stale_sessions). The app's
+-- sender (src/lib/notifications/outbox.ts, using the service role key) claims
+-- queued rows, renders and sends them, and records the result.
+-- ---------------------------------------------------------------------------
+
+alter table public.profiles
+  add column if not exists email_notifications boolean not null default true;
+alter table public.profiles
+  add column if not exists notification_time_zone text;
+
+grant update (email_notifications) on public.profiles to authenticated;
+
+-- Records the member's browser time zone so emails show times they recognise.
+create or replace function public.set_my_time_zone(p_time_zone text)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if auth.uid() is null then
+    raise exception using errcode = '28000', message = 'Sign in to update your time zone.';
+  end if;
+  if p_time_zone is null or not exists (select 1 from pg_catalog.pg_timezone_names where name = p_time_zone) then
+    raise exception using errcode = '22023', message = 'Choose a valid time zone.';
+  end if;
+  update public.profiles set notification_time_zone = p_time_zone where id = auth.uid();
+end;
+$$;
+
+create table if not exists public.notification_outbox (
+  id uuid primary key default gen_random_uuid(),
+  recipient_id uuid not null references public.profiles (id) on delete cascade,
+  kind text not null check (kind in (
+    'session_requested',
+    'request_accepted',
+    'request_declined',
+    'request_expired',
+    'session_cancelled',
+    'session_not_started',
+    'session_auto_completed',
+    'meeting_details_changed',
+    'session_reminder',
+    'review_received'
+  )),
+  session_id uuid references public.sessions (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  send_after timestamptz not null default now(),
+  attempts smallint not null default 0,
+  sent_at timestamptz,
+  skipped_reason text,
+  last_error text
+);
+
+-- One unsent email per recipient, kind, and session: repeated changes collapse.
+create unique index if not exists notification_outbox_pending_idx
+  on public.notification_outbox (recipient_id, kind, session_id)
+  where sent_at is null;
+create index if not exists notification_outbox_due_idx
+  on public.notification_outbox (send_after)
+  where sent_at is null;
+
+alter table public.notification_outbox enable row level security;
+revoke all on public.notification_outbox from anon, authenticated;
+
+create or replace function public.enqueue_notification(p_recipient_id uuid, p_kind text, p_session_id uuid)
+returns void
+language sql
+security definer
+set search_path = ''
+as $$
+  insert into public.notification_outbox (recipient_id, kind, session_id)
+  values (p_recipient_id, p_kind, p_session_id)
+  on conflict (recipient_id, kind, session_id) where sent_at is null do nothing;
+$$;
+
+create or replace function public.queue_session_notifications()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor uuid := auth.uid(); -- null when the change comes from pg_cron or the sender
+begin
+  if tg_op = 'INSERT' then
+    perform public.enqueue_notification(new.teacher_id, 'session_requested', new.id);
+    return new;
+  end if;
+
+  if new.status is distinct from old.status then
+    if new.status = 'confirmed' then
+      perform public.enqueue_notification(new.learner_id, 'request_accepted', new.id);
+    elsif new.status = 'cancelled' then
+      if new.closed_reason = 'declined' then
+        perform public.enqueue_notification(new.learner_id, 'request_declined', new.id);
+      elsif new.closed_reason = 'expired' then
+        perform public.enqueue_notification(new.learner_id, 'request_expired', new.id);
+      elsif new.closed_reason = 'no_show' then
+        perform public.enqueue_notification(new.learner_id, 'session_not_started', new.id);
+        perform public.enqueue_notification(new.teacher_id, 'session_not_started', new.id);
+      else
+        if v_actor is distinct from new.learner_id then
+          perform public.enqueue_notification(new.learner_id, 'session_cancelled', new.id);
+        end if;
+        if v_actor is distinct from new.teacher_id then
+          perform public.enqueue_notification(new.teacher_id, 'session_cancelled', new.id);
+        end if;
+      end if;
+    elsif new.status = 'completed' and new.closed_reason = 'auto_completed' then
+      perform public.enqueue_notification(new.learner_id, 'session_auto_completed', new.id);
+      perform public.enqueue_notification(new.teacher_id, 'session_auto_completed', new.id);
+    end if;
+  end if;
+
+  if new.meeting_details is distinct from old.meeting_details
+    and new.meeting_details <> ''
+    and new.status in ('requested', 'confirmed', 'in_progress')
+  then
+    if v_actor is distinct from new.learner_id then
+      perform public.enqueue_notification(new.learner_id, 'meeting_details_changed', new.id);
+    end if;
+    if v_actor is distinct from new.teacher_id then
+      perform public.enqueue_notification(new.teacher_id, 'meeting_details_changed', new.id);
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists sessions_queue_notifications on public.sessions;
+create trigger sessions_queue_notifications
+after insert or update on public.sessions
+for each row execute function public.queue_session_notifications();
+
+create or replace function public.queue_review_notification()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  perform public.enqueue_notification(new.teacher_id, 'review_received', new.session_id);
+  return new;
+end;
+$$;
+
+drop trigger if exists session_reviews_queue_notification on public.session_reviews;
+create trigger session_reviews_queue_notification
+after insert on public.session_reviews
+for each row execute function public.queue_review_notification();
+
+-- Queues a reminder to both partners for confirmed sessions starting within the hour.
+create or replace function public.enqueue_session_reminders()
+returns void
+language sql
+security definer
+set search_path = ''
+as $$
+  insert into public.notification_outbox (recipient_id, kind, session_id)
+  select participant.id, 'session_reminder', s.id
+  from public.sessions s
+  cross join lateral (values (s.learner_id), (s.teacher_id)) as participant(id)
+  where s.status = 'confirmed'
+    and s.scheduled_at > now()
+    and s.scheduled_at <= now() + interval '1 hour'
+    and not exists (
+      select 1
+      from public.notification_outbox o
+      where o.session_id = s.id
+        and o.kind = 'session_reminder'
+        and o.recipient_id = participant.id
+    )
+  on conflict do nothing;
+$$;
+
+-- Called by the app's sender with the service role. Also resolves overdue
+-- sessions and queues reminders, so it doubles as the scheduler when pg_cron
+-- isn't enabled. Claimed rows are leased with a growing back-off so a crashed
+-- send is retried (up to 5 attempts).
+create or replace function public.claim_notifications(p_limit integer default 25)
+returns table (
+  id uuid,
+  kind text,
+  recipient_email text,
+  recipient_name text,
+  recipient_time_zone text,
+  session_id uuid,
+  skill text,
+  scheduled_at timestamptz,
+  duration_hours numeric,
+  meeting_details text,
+  session_status text,
+  recipient_role text,
+  partner_name text,
+  review_rating smallint,
+  review_comment text
+)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  perform public.resolve_stale_sessions();
+  perform public.enqueue_session_reminders();
+
+  update public.notification_outbox o
+  set sent_at = now(), skipped_reason = 'opted_out'
+  from public.profiles p
+  where p.id = o.recipient_id
+    and o.sent_at is null
+    and not p.email_notifications;
+
+  return query
+  with batch as (
+    select o.id
+    from public.notification_outbox o
+    where o.sent_at is null
+      and o.send_after <= now()
+      and o.attempts < 5
+    order by o.created_at
+    limit least(greatest(coalesce(p_limit, 25), 1), 100)
+    for update skip locked
+  ),
+  claimed as (
+    update public.notification_outbox o
+    set attempts = o.attempts + 1,
+        send_after = now() + (o.attempts + 1) * interval '10 minutes'
+    from batch
+    where o.id = batch.id
+    returning o.id, o.kind, o.recipient_id, o.session_id
+  )
+  select
+    c.id,
+    c.kind,
+    u.email::text,
+    rp.full_name,
+    coalesce(rp.notification_time_zone, rp.availability_time_zone, 'UTC'),
+    s.id,
+    s.skill,
+    s.scheduled_at,
+    s.duration_hours,
+    s.meeting_details,
+    s.status,
+    case when s.learner_id = c.recipient_id then 'learner' else 'teacher' end,
+    partner.full_name,
+    r.rating,
+    r.comment
+  from claimed c
+  join public.profiles rp on rp.id = c.recipient_id
+  join auth.users u on u.id = c.recipient_id
+  left join public.sessions s on s.id = c.session_id
+  left join public.profiles partner
+    on partner.id = case when s.learner_id = c.recipient_id then s.teacher_id else s.learner_id end
+  left join public.session_reviews r on r.session_id = s.id;
+end;
+$$;
+
+-- Records what happened to a claimed email: 'sent', 'skipped', or 'failed'.
+create or replace function public.finish_notification(p_id uuid, p_result text, p_detail text default null)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if p_result = 'sent' then
+    update public.notification_outbox set sent_at = now(), last_error = null where id = p_id;
+  elsif p_result = 'skipped' then
+    update public.notification_outbox set sent_at = now(), skipped_reason = left(coalesce(p_detail, 'skipped'), 200) where id = p_id;
+  elsif p_result = 'failed' then
+    update public.notification_outbox set last_error = left(coalesce(p_detail, 'unknown error'), 500) where id = p_id;
+  else
+    raise exception using errcode = '22023', message = 'Unknown notification result.';
+  end if;
+end;
+$$;
+
+revoke all on function public.set_my_time_zone(text) from public, anon;
+grant execute on function public.set_my_time_zone(text) to authenticated;
+revoke all on function public.enqueue_notification(uuid, text, uuid) from public, anon, authenticated;
+revoke all on function public.queue_session_notifications() from public, anon, authenticated;
+revoke all on function public.queue_review_notification() from public, anon, authenticated;
+revoke all on function public.enqueue_session_reminders() from public, anon, authenticated;
+revoke all on function public.claim_notifications(integer) from public, anon, authenticated;
+revoke all on function public.finish_notification(uuid, text, text) from public, anon, authenticated;
+grant execute on function public.claim_notifications(integer) to service_role;
+grant execute on function public.finish_notification(uuid, text, text) to service_role;

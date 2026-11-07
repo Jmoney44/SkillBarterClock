@@ -70,6 +70,42 @@ Teachers set recurring weekly hours, such as Monday 6:00–9:00 PM, in their own
 
 After a session is completed, the learner can rate the teacher from 1 to 5 stars and add an optional comment (up to 500 characters) from the session room. There's one review per session, and the learner can edit it for 30 days after the session ends. Teachers see their reviews on the Teaching dashboard. Other members see each teacher's average rating on Explore and the reviews on the teacher's profile, with reviewers shown by first name only. Reviews are written only through the `submit_session_review` database function.
 
+## Notification emails
+
+Members get emails about their sessions:
+
+- **Teacher:** a new request.
+- **Learner:** a request accepted, declined, or expired.
+- **The other person:** a cancellation, or a change to the meeting details.
+- **Both:** a reminder about an hour before the session, and notice when a session closes as not started or auto-completed.
+- **Teacher:** a new review.
+
+Times are shown in each member's own time zone, which the app records from their browser. Members can turn emails off in Settings.
+
+Database triggers queue each email in `notification_outbox`, including events from the scheduled cleanup. The app sends queued emails through [Resend](https://resend.com) right after a member's action, and on a schedule for reminders and background events. Emails that are out of date by the time they're sent are skipped, such as a request that was already cancelled. Failed sends are retried up to five times with increasing gaps.
+
+To turn it on:
+
+1. Create a Resend account, verify your sending domain, and create an API key.
+2. Set `SUPABASE_SERVICE_ROLE_KEY`, `RESEND_API_KEY`, `EMAIL_FROM`, `CRON_SECRET`, and `NEXT_PUBLIC_SITE_URL` (see `.env.example`). The service role key is used only on the server, by the email sender.
+3. Rerun `supabase/schema.sql`.
+4. Call `GET /api/cron/notifications` with `Authorization: Bearer <CRON_SECRET>` every 5–10 minutes. Each call also resolves overdue sessions and queues reminders. For example, with Supabase's `pg_cron` and `pg_net` extensions:
+
+   ```sql
+   select cron.schedule(
+     'send-notification-emails',
+     '*/5 * * * *',
+     $$ select net.http_get(
+          url := 'https://your-app.example.com/api/cron/notifications',
+          headers := jsonb_build_object('Authorization', 'Bearer YOUR_CRON_SECRET')
+        ) $$
+   );
+   ```
+
+   Vercel Cron also works and sends the `CRON_SECRET` header automatically, but the Hobby plan only runs jobs once a day, which is too infrequent for reminders.
+
+Without these settings the app works normally and emails stay queued.
+
 ## Admin access
 
 The admin page shows community totals, recent members, and recent sessions, and lets administrators publish announcements to the notification bell. To promote an existing account, first run the updated `supabase/schema.sql`, then run this in the Supabase SQL Editor with that account's email:

@@ -12,6 +12,8 @@ type SettingsProfile = {
   avatarUrl: string;
   role: "member" | "admin";
   timezone: string;
+  emailNotifications: boolean;
+  notificationTimeZone: string | null;
   createdAt: string;
 };
 
@@ -39,6 +41,9 @@ export default function SettingsPage() {
   const [passwordStatus, setPasswordStatus] = useState("");
   const [changingPassword, setChangingPassword] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [emailEnabled, setEmailEnabled] = useState(true);
+  const [emailStatus, setEmailStatus] = useState("");
+  const [savingEmail, setSavingEmail] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -53,6 +58,7 @@ export default function SettingsPage() {
         if (!response.ok) throw new Error(data.error || "Unable to load your account settings.");
         if (!active) return;
         setProfile(data.user);
+        setEmailEnabled(data.user.emailNotifications ?? true);
         try {
           const stored = window.localStorage.getItem(`notification-preferences:${data.user.id}`);
           if (stored) setPreferences({ ...defaultPreferences, ...JSON.parse(stored) });
@@ -84,6 +90,27 @@ export default function SettingsPage() {
     } catch {
       setError("Could not save your notification preferences on this device.");
       setSaved(false);
+    }
+  }
+
+  async function updateEmailNotifications(enabled: boolean) {
+    setSavingEmail(true);
+    setEmailStatus("");
+    setEmailEnabled(enabled);
+    try {
+      const response = await fetch("/api/settings/notifications", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailNotifications: enabled }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not save your email preference.");
+      setEmailStatus(enabled ? "Email notifications are on." : "Email notifications are off.");
+    } catch (emailError) {
+      setEmailEnabled(!enabled);
+      setEmailStatus(emailError instanceof Error ? emailError.message : "Could not save your email preference.");
+    } finally {
+      setSavingEmail(false);
     }
   }
 
@@ -167,6 +194,26 @@ export default function SettingsPage() {
               <div className="settings-detail-grid">
                 <div><span>Email address</span><b>{profile.email}</b></div>
                 <div><span>Timezone</span><b>{profile.timezone}</b></div>
+              </div>
+            </section>
+
+            <section className="settings-card">
+              <div className="settings-section-heading">
+                <span className="settings-section-icon"><Icon name="message" size={17} /></span>
+                <div><h2>Email notifications</h2><p>Emails to {profile.email} about your sessions and reviews.</p></div>
+              </div>
+              <div className="settings-preference-list">
+                <label className="settings-preference">
+                  <span>
+                    <b>Email me about my sessions</b>
+                    <small>New requests, confirmations, cancellations, meeting details, a reminder an hour before each session, and new reviews.</small>
+                  </span>
+                  <input type="checkbox" checked={emailEnabled} disabled={savingEmail} onChange={(event) => void updateEmailNotifications(event.target.checked)} />
+                </label>
+              </div>
+              <div className="settings-save-row">
+                {emailStatus && <span className="form-success" role="status">{emailStatus}</span>}
+                <small className="availability-off" style={{ fontSize: 12 }}>Times in emails use your time zone{profile.notificationTimeZone ? ` (${profile.notificationTimeZone.replaceAll("_", " ")})` : ""}.</small>
               </div>
             </section>
 
