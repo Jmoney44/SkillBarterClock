@@ -99,7 +99,16 @@ export function TeacherCard({ person }: { person: Person | PublicTeacher }) {
   );
 }
 
-export function AppShell({ children, title }: { children: ReactNode; title: string }) {
+export function AppShell({
+  children,
+  title,
+  allowIncompleteOnboarding = false,
+}: {
+  children: ReactNode;
+  title: string;
+  /** Set only by the onboarding page, which incomplete members are sent to. */
+  allowIncompleteOnboarding?: boolean;
+}) {
   const router = useRouter();
   const [userName, setUserName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
@@ -144,6 +153,12 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
         }
 
         const data = await response.json();
+        // Members must finish onboarding before using the app. Admins are exempt
+        // so operator accounts don't need teaching and learning skills.
+        if (data?.user && !data.user.onboardingComplete && data.user.role !== "admin" && !allowIncompleteOnboarding) {
+          router.replace("/onboarding");
+          return;
+        }
         if (data?.user?.name) {
           setUserName(data.user.name);
         }
@@ -169,7 +184,7 @@ export function AppShell({ children, title }: { children: ReactNode; title: stri
     }
 
     loadSession();
-  }, [router]);
+  }, [allowIncompleteOnboarding, router]);
 
   useEffect(() => {
     async function loadNotifications() {

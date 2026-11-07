@@ -399,6 +399,14 @@ begin
   if not exists (
     select 1
     from public.profiles p
+    where p.id = v_learner_id
+      and p.onboarding_complete
+  ) then
+    raise exception using errcode = '22023', message = 'Finish setting up your profile before booking a session.';
+  end if;
+  if not exists (
+    select 1
+    from public.profiles p
     where p.id = p_teacher_id
       and p.onboarding_complete
       and btrim(p.full_name) <> ''

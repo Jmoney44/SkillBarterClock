@@ -120,7 +120,7 @@ export default function OnboardingPage() {
   }
 
   return (
-    <AppShell title="Onboarding">
+    <AppShell title="Onboarding" allowIncompleteOnboarding>
       <div className="onboarding-wrap">
         <div className="onboarding-header">
           <div>

@@ -29,7 +29,7 @@ export default function LoginPage() {
         return;
       }
 
-      router.push("/");
+      router.push(data.user?.onboardingComplete || data.user?.role === "admin" ? "/" : "/onboarding");
       router.refresh();
     } catch {
       setError("We couldn’t reach the server. Please try again.");
