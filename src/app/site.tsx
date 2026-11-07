@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { PublicTeacher } from "./data";
+import { RatingSummary } from "./ratings";
 
 const navItems = [
   { href: "/", label: "Overview", icon: "grid" },
@@ -74,6 +75,7 @@ export function TeacherCard({ person }: { person: PublicTeacher }) {
         <div>
           <strong>{name}</strong>
           <span>{skill}</span>
+          <span className="teacher-rating-line"><RatingSummary average={person.rating_average} count={person.rating_count} /></span>
         </div>
       </div>
       <p>{person.bio || `Based in ${person.location || person.timezone}. ${person.availability ? `Available: ${person.availability}.` : ""}`}</p>

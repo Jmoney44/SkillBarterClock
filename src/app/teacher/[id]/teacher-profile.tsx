@@ -5,12 +5,15 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { PublicTeacher } from "../../data";
 import { AppShell, Avatar, Icon } from "../../site";
+import { RatingSummary, ReviewList, type TeacherReview } from "../../ratings";
 
 export default function TeacherProfile({ teacherId }: { teacherId: string }) {
   const router = useRouter();
   const [teacher, setTeacher] = useState<PublicTeacher | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [reviews, setReviews] = useState<TeacherReview[]>([]);
+  const [reviewsError, setReviewsError] = useState("");
 
   useEffect(() => {
     async function loadTeacher() {
@@ -33,7 +36,22 @@ export default function TeacherProfile({ teacherId }: { teacherId: string }) {
       }
     }
 
+    async function loadReviews() {
+      try {
+        const response = await fetch(`/api/reviews?teacherId=${encodeURIComponent(teacherId)}`, { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) {
+          if (response.status !== 401) setReviewsError(data.error || "Could not load reviews.");
+          return;
+        }
+        setReviews(data.reviews ?? []);
+      } catch {
+        setReviewsError("Could not load reviews.");
+      }
+    }
+
     void loadTeacher();
+    void loadReviews();
   }, [router, teacherId]);
 
   return (
@@ -51,6 +69,7 @@ export default function TeacherProfile({ teacherId }: { teacherId: string }) {
               <div className="eyebrow">TEACHER PROFILE</div>
               <h1>{teacher.full_name}</h1>
               <p className="lead">{teacher.teaching_skills.join(" · ")}</p>
+              <RatingSummary average={teacher.rating_average} count={teacher.rating_count} />
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <Link href="/explore" className="button button-secondary">Back to explore</Link>
@@ -105,6 +124,20 @@ export default function TeacherProfile({ teacherId }: { teacherId: string }) {
               <div className="profile-languages"><b>Availability</b><span>{teacher.availability || "Not specified"}</span></div>
             </section>
           </div>
+
+          <section className="section-block" style={{ marginTop: 28 }}>
+            <div className="section-heading">
+              <div><div className="eyebrow">FROM THEIR LEARNERS</div><h3>Reviews</h3></div>
+              <RatingSummary average={teacher.rating_average} count={teacher.rating_count} />
+            </div>
+            {reviewsError ? (
+              <p className="form-error" role="alert">{reviewsError}</p>
+            ) : reviews.length ? (
+              <ReviewList reviews={reviews} />
+            ) : (
+              <div className="empty-hint"><Icon name="message" /><span>No reviews yet. Learners can leave one after a completed session.</span></div>
+            )}
+          </section>
         </>
       )}
     </AppShell>

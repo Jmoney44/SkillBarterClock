@@ -9,4 +9,7 @@ export type PublicTeacher = {
   availability: string;
   teaching_skills: string[];
   learning_skills: string[];
+  /** Average of learner reviews, or null when there are none yet. */
+  rating_average: number | string | null;
+  rating_count: number;
 };

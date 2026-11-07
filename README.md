@@ -62,6 +62,10 @@ The `/teacher` page is the teaching workspace. It shows incoming learner request
 
 If you already ran an earlier version of `supabase/schema.sql`, run the updated file again in the Supabase SQL Editor to add the session, wallet, and admin-announcement tables, policies, and functions. The schema is safe to re-run.
 
+## Ratings and reviews
+
+After a session is completed, the learner can rate the teacher from 1 to 5 stars and add an optional comment (up to 500 characters) from the session room. There's one review per session, and the learner can edit it for 30 days after the session ends. Teachers see their reviews on the Teaching dashboard. Other members see each teacher's average rating on Explore and the reviews on the teacher's profile, with reviewers shown by first name only. Reviews are written only through the `submit_session_review` database function.
+
 ## Admin access
 
 The admin page shows community totals, recent members, and recent sessions, and lets administrators publish announcements to the notification bell. To promote an existing account, first run the updated `supabase/schema.sql`, then run this in the Supabase SQL Editor with that account's email:

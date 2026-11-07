@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AppShell, Avatar, Icon } from "../site";
 import { MeetingDetailsText } from "../meeting-details";
+import { Stars } from "../ratings";
 import { closedReasonLabel, startAvailability, type ClosedReason } from "@/lib/session-rules";
 
 type SessionStatus = "requested" | "confirmed" | "in_progress" | "completed" | "cancelled";
@@ -19,6 +20,8 @@ type SessionRecord = {
   learner_note: string;
   closed_reason: ClosedReason | null;
   meeting_details: string;
+  ended_at: string | null;
+  review_rating: number | null;
   role: "learner" | "teacher";
   partner_id: string;
   partner_name: string;
@@ -145,6 +148,11 @@ export default function SessionsPage() {
           const scheduled = new Date(session.scheduled_at);
           const canManageRequest = session.role === "teacher" && session.status === "requested";
           const start = startAvailability(session, now);
+          const canReview = session.status === "completed"
+            && session.role === "learner"
+            && !session.review_rating
+            && now !== null
+            && now - new Date(session.ended_at ?? session.scheduled_at).getTime() < 30 * 24 * 3_600_000;
           return (
             <article className="session-card" key={session.id}>
               <div className="date-tile">
@@ -160,6 +168,9 @@ export default function SessionsPage() {
                   <small>{session.meeting_details ? <>Meet: <MeetingDetailsText text={session.meeting_details} /></> : "No meeting details yet. Add them in the session room."}</small>
                 )}
                 {session.status === "confirmed" && start.hint && <small>{start.hint}</small>}
+                {session.status === "completed" && session.review_rating && (
+                  <small><Stars rating={session.review_rating} /> {session.role === "learner" ? "Your review" : "Learner’s review"}</small>
+                )}
               </div>
               <span className={`status-pill ${session.status === "completed" ? "status-done" : ["requested", "in_progress"].includes(session.status) ? "status-wait" : ""}`}><i />{statusLabel(session.status, session.closed_reason)}</span>
               <div className="session-actions">
@@ -178,7 +189,11 @@ export default function SessionsPage() {
                 {["requested", "confirmed"].includes(session.status) && (
                   <button className="button button-secondary small-button" type="button" disabled={activeId === session.id} onClick={() => void actOnSession(session.id, "cancel")}>Cancel</button>
                 )}
-                <Link className="button button-secondary small-button" href={`/session?id=${encodeURIComponent(session.id)}`}>Open</Link>
+                {canReview ? (
+                  <Link className="button button-primary small-button" href={`/session?id=${encodeURIComponent(session.id)}`}>Leave a review</Link>
+                ) : (
+                  <Link className="button button-secondary small-button" href={`/session?id=${encodeURIComponent(session.id)}`}>Open</Link>
+                )}
               </div>
             </article>
           );

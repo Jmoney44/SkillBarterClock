@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import type { PublicProfile } from "@/lib/supabase/profile";
 import { AppShell, Avatar, Icon } from "../site";
 import { MeetingDetailsText } from "../meeting-details";
+import { RatingSummary, ReviewList, type TeacherReview } from "../ratings";
 import { startAvailability } from "@/lib/session-rules";
 
 type TeachingSession = {
@@ -79,6 +80,24 @@ export default function TeacherDashboardPage() {
   const [notice, setNotice] = useState("");
   // Null until the first client tick, so prerendering never reads the clock.
   const [now, setNow] = useState<number | null>(null);
+  const [rating, setRating] = useState<{ average: number | null; count: number; reviews: TeacherReview[] } | null>(null);
+  const profileId = profile?.id;
+
+  useEffect(() => {
+    if (!profileId) return;
+    let active = true;
+    fetch(`/api/reviews?teacherId=${encodeURIComponent(profileId)}`, { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (active && response.ok) {
+          setRating({ average: data.ratingAverage, count: data.ratingCount, reviews: data.reviews ?? [] });
+        }
+      })
+      .catch(() => {
+        // Reviews are supplementary here; the rest of the dashboard still works.
+      });
+    return () => { active = false; };
+  }, [profileId]);
 
   useEffect(() => {
     const tick = () => setNow(Date.now());
@@ -188,6 +207,7 @@ export default function TeacherDashboardPage() {
               <span className="eyebrow">THANK YOU FOR SHARING YOUR TIME</span>
               <h2>{profile.name ? `Hello, ${profile.name.split(" ")[0]}.` : "Hello, teacher."}</h2>
               <p>{profile.teaching.length ? `You’re offering ${profile.teaching.join(", ")}.` : "Add the skills you’re ready to teach so learners can find you."}</p>
+              {rating && <RatingSummary average={rating.average} count={rating.count} />}
             </div>
             <Link className="text-link" href="/profile">View your profile <Icon name="arrow" size={14} /></Link>
           </section>
@@ -270,6 +290,21 @@ export default function TeacherDashboardPage() {
               <div className="teacher-empty-state compact">
                 <span><Icon name="calendar" size={18} /></span>
                 <div><b>No sessions on your calendar</b><p>Accepted sessions will show up here with the time and learner details.</p></div>
+              </div>
+            )}
+          </section>
+
+          <section className="teacher-dashboard-section">
+            <div className="section-heading">
+              <div><div className="eyebrow">FROM YOUR LEARNERS</div><h3>Recent reviews</h3></div>
+              {rating && <RatingSummary average={rating.average} count={rating.count} />}
+            </div>
+            {rating?.reviews.length ? (
+              <ReviewList reviews={rating.reviews.slice(0, 5)} />
+            ) : (
+              <div className="teacher-empty-state compact">
+                <span><Icon name="message" size={18} /></span>
+                <div><b>No reviews yet</b><p>Learners can rate a session once it’s completed. Reviews appear on your public profile.</p></div>
               </div>
             )}
           </section>

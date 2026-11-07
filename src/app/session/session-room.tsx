@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AppShell, Avatar, Icon } from "../site";
 import { MeetingDetailsText } from "../meeting-details";
+import { ReviewForm, Stars } from "../ratings";
 import { closedReasonLabel, startAvailability, type ClosedReason } from "@/lib/session-rules";
 
 type SessionStatus = "requested" | "confirmed" | "in_progress" | "completed" | "cancelled";
@@ -25,6 +26,8 @@ type SessionRecord = {
   ended_at: string | null;
   closed_reason: ClosedReason | null;
   meeting_details: string;
+  review_rating: number | null;
+  review_comment: string | null;
   role: "learner" | "teacher";
   partner_name: string;
   partner_timezone: string;
@@ -50,6 +53,7 @@ export default function SessionRoom({ sessionId }: { sessionId: string }) {
   const [meetingDraft, setMeetingDraft] = useState("");
   const [savingMeeting, setSavingMeeting] = useState(false);
   const [meetingError, setMeetingError] = useState("");
+  const [editingReview, setEditingReview] = useState(false);
 
   const fetchSession = useCallback(async (): Promise<SessionRecord | null> => {
     const response = await fetch("/api/sessions", { cache: "no-store" });
@@ -141,6 +145,10 @@ export default function SessionRoom({ sessionId }: { sessionId: string }) {
   }
 
   const scheduled = session ? new Date(session.scheduled_at) : null;
+  const reviewWindowOpen = Boolean(
+    session?.status === "completed"
+      && now - new Date(session.ended_at ?? session.scheduled_at).getTime() < 30 * 24 * 3_600_000,
+  );
   const canEditMeeting = Boolean(session && ["requested", "confirmed", "in_progress"].includes(session.status));
   const currentUserStarted = session && (session.role === "learner" ? session.learner_started : session.teacher_started);
   const otherUserStarted = session && (session.role === "learner" ? session.teacher_started : session.learner_started);
@@ -176,12 +184,12 @@ export default function SessionRoom({ sessionId }: { sessionId: string }) {
             <section className="clock-panel">
               <div className="clock-panel-top">
                 <span>SESSION CLOCK</span>
-                <span className="stake"><i /> {Number(session.duration_hours).toFixed(1)} TC held safely</span>
+                <span className="stake"><i /> {Number(session.duration_hours).toFixed(1)} TC {session.status === "completed" ? "paid to the teacher" : session.status === "cancelled" ? "returned to the learner" : "held safely"}</span>
               </div>
               <div className="timer-dial">
                 <div className="timer-face">
                   <span className="timer-live">{session.status === "in_progress" ? "SESSION IN PROGRESS" : statusText.toUpperCase()}</span>
-                  <strong>{formatElapsed(session.started_at, now)}</strong>
+                  <strong>{formatElapsed(session.started_at, session.ended_at ? new Date(session.ended_at).getTime() : now)}</strong>
                   <span className="timer-sub">
                     {session.status === "in_progress" ? "Elapsed session time" : "Both partners start the clock"}
                   </span>
@@ -275,6 +283,36 @@ export default function SessionRoom({ sessionId }: { sessionId: string }) {
                 {session.learner_note && <div className="profile-languages"><b>Learning note</b><span>{session.learner_note}</span></div>}
                 <Link className="text-link" href="/sessions">View all sessions <Icon name="arrow" size={13} /></Link>
               </div>
+              {session.status === "completed" && (
+                <div className="room-side-card">
+                  <div className="eyebrow">{session.role === "learner" ? "YOUR REVIEW" : "LEARNER REVIEW"}</div>
+                  {session.review_rating && !editingReview ? (
+                    <>
+                      <h3><Stars rating={session.review_rating} /></h3>
+                      {session.review_comment && <p className="review-comment">{session.review_comment}</p>}
+                      {session.role === "learner" && reviewWindowOpen && (
+                        <button className="text-link" type="button" onClick={() => setEditingReview(true)}>Edit your review</button>
+                      )}
+                    </>
+                  ) : session.role === "learner" && reviewWindowOpen ? (
+                    <>
+                      <h3>How was {session.partner_name.split(" ")[0]}?</h3>
+                      <ReviewForm
+                        sessionId={session.id}
+                        initialRating={session.review_rating}
+                        initialComment={session.review_comment}
+                        onSaved={async () => {
+                          setEditingReview(false);
+                          await refreshSession();
+                        }}
+                        onCancel={session.review_rating ? () => setEditingReview(false) : undefined}
+                      />
+                    </>
+                  ) : (
+                    <p>{session.role === "learner" ? "The 30-day window to review this session has closed." : "Your learner hasn’t left a review for this session."}</p>
+                  )}
+                </div>
+              )}
               <div className="room-side-card room-help">
                 <Icon name="shield" />
                 <div><b>Credits stay protected</b><span>They transfer only after both partners end the clock.</span></div>

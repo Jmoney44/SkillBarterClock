@@ -430,3 +430,25 @@ h1 { margin: 7px 0 3px; font-family: var(--font-display), Georgia, serif; font-s
 /* Sidebar: fairness details */
 .side-note-details { display: grid; gap: 6px; margin: 10px 0 0; padding-left: 16px; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .sidebar { overflow-y: auto; }
+
+/* Ratings and reviews */
+.stars { display: inline-flex; gap: 1px; font-size: 13px; line-height: 1; }
+.star-on { color: #d99a1e; }
+.star-off { color: color-mix(in srgb, var(--muted) 35%, transparent); }
+.rating-summary { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); font-size: 11px; }
+.rating-summary b { color: var(--ink); }
+.rating-new { font-style: italic; }
+.review-list { display: grid; gap: 10px; }
+.review-item { padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.review-item-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
+.review-item p { margin: 8px 0 0; color: var(--ink); font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.review-form { display: grid; gap: 10px; margin-top: 10px; }
+.star-input { display: flex; align-items: center; gap: 2px; margin: 0; padding: 0; border: 0; }
+.star-input legend { margin-bottom: 4px; padding: 0; color: var(--ink); font-size: 11px; font-weight: 700; }
+.star-input label { position: relative; cursor: pointer; font-size: 26px; line-height: 1; }
+.star-input input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.star-input label:has(input:focus-visible) { outline: 3px solid rgba(15, 118, 110, .25); outline-offset: 2px; border-radius: 4px; }
+.star-input-word { margin-left: 8px; color: var(--muted); font-size: 12px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.teacher-rating-line { display: block; margin-top: 3px; }
+.review-comment { margin: 6px 0 10px; color: var(--ink); font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -270,6 +270,39 @@ where not exists (
   where wt.user_id = p.id and wt.kind = 'starter'
 );
 
+-- Learners rate teachers after a completed session: one review per session,
+-- editable for 30 days after the session ends. Written only through
+-- submit_session_review; participants can read the review for their session.
+create table if not exists public.session_reviews (
+  id uuid primary key default gen_random_uuid(),
+  session_id uuid not null unique references public.sessions (id) on delete cascade,
+  reviewer_id uuid not null references public.profiles (id) on delete cascade,
+  teacher_id uuid not null references public.profiles (id) on delete cascade,
+  rating smallint not null check (rating between 1 and 5),
+  comment text not null default '' check (char_length(comment) <= 500),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (reviewer_id <> teacher_id)
+);
+
+create index if not exists session_reviews_teacher_created_idx
+  on public.session_reviews (teacher_id, created_at desc);
+
+drop trigger if exists session_reviews_set_updated_at on public.session_reviews;
+create trigger session_reviews_set_updated_at
+before update on public.session_reviews
+for each row execute function public.set_profile_updated_at();
+
+alter table public.session_reviews enable row level security;
+
+drop policy if exists "Participants can read their session reviews" on public.session_reviews;
+create policy "Participants can read their session reviews"
+on public.session_reviews for select
+to authenticated
+using ((select auth.uid()) in (reviewer_id, teacher_id));
+
+grant select on public.session_reviews to authenticated;
+
 drop function if exists public.get_public_teachers(uuid);
 create function public.get_public_teachers(p_teacher_id uuid default null)
 returns table (
@@ -282,7 +315,9 @@ returns table (
   timezone text,
   availability text,
   teaching_skills text[],
-  learning_skills text[]
+  learning_skills text[],
+  rating_average numeric,
+  rating_count integer
 )
 language sql
 stable
@@ -299,8 +334,15 @@ as $$
     p.timezone,
     p.availability,
     p.teaching_skills,
-    p.learning_skills
+    p.learning_skills,
+    ratings.rating_average,
+    coalesce(ratings.rating_count, 0)
   from public.profiles p
+  left join lateral (
+    select round(avg(r.rating), 1) as rating_average, count(*)::integer as rating_count
+    from public.session_reviews r
+    where r.teacher_id = p.id
+  ) ratings on true
   where p.onboarding_complete
     and p.id <> (select auth.uid())
     and (p_teacher_id is null or p.id = p_teacher_id)
@@ -327,6 +369,8 @@ returns table (
   ended_at timestamptz,
   closed_reason text,
   meeting_details text,
+  review_rating smallint,
+  review_comment text,
   created_at timestamptz,
   partner_id uuid,
   partner_name text,
@@ -354,6 +398,8 @@ as $$
     s.ended_at,
     s.closed_reason,
     s.meeting_details,
+    r.rating,
+    r.comment,
     s.created_at,
     case when s.learner_id = (select auth.uid()) then s.teacher_id else s.learner_id end,
     p.full_name,
@@ -361,6 +407,7 @@ as $$
   from public.sessions s
   join public.profiles p
     on p.id = case when s.learner_id = (select auth.uid()) then s.teacher_id else s.learner_id end
+  left join public.session_reviews r on r.session_id = s.id
   where (select auth.uid()) in (s.learner_id, s.teacher_id)
   order by s.scheduled_at desc;
 $$;
@@ -778,6 +825,111 @@ begin
 end;
 $$;
 
+-- Creates or updates the learner's review of a completed session.
+create or replace function public.submit_session_review(p_session_id uuid, p_rating integer, p_comment text default '')
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_session public.sessions%rowtype;
+  v_comment text := btrim(coalesce(p_comment, ''));
+  v_review_id uuid;
+begin
+  if v_user_id is null then
+    raise exception using errcode = '28000', message = 'Sign in to review a session.';
+  end if;
+  if p_rating is null or p_rating not between 1 and 5 then
+    raise exception using errcode = '22023', message = 'Choose a rating from 1 to 5 stars.';
+  end if;
+  if char_length(v_comment) > 500 then
+    raise exception using errcode = '22023', message = 'Reviews must be 500 characters or fewer.';
+  end if;
+
+  select * into v_session
+  from public.sessions
+  where id = p_session_id
+  for update;
+  if not found or v_user_id not in (v_session.learner_id, v_session.teacher_id) then
+    raise exception using errcode = 'P0002', message = 'Session not found.';
+  end if;
+  if v_user_id <> v_session.learner_id then
+    raise exception using errcode = '22023', message = 'Only the learner can review this session.';
+  end if;
+  if v_session.status <> 'completed' then
+    raise exception using errcode = '22023', message = 'You can review a session once it is completed.';
+  end if;
+  if coalesce(v_session.ended_at, v_session.updated_at) + interval '30 days' < now() then
+    raise exception using errcode = '22023', message = 'Reviews can be added or changed for 30 days after a session.';
+  end if;
+
+  insert into public.session_reviews (session_id, reviewer_id, teacher_id, rating, comment)
+  values (p_session_id, v_user_id, v_session.teacher_id, p_rating, v_comment)
+  on conflict (session_id) do update
+  set rating = excluded.rating,
+      comment = excluded.comment
+  returning id into v_review_id;
+
+  return v_review_id;
+end;
+$$;
+
+-- Recent reviews of a teacher, for their public profile or their own dashboard.
+-- Reviewers are shown by first name only.
+create or replace function public.get_teacher_reviews(p_teacher_id uuid, p_limit integer default 20)
+returns table (
+  id uuid,
+  rating smallint,
+  comment text,
+  skill text,
+  reviewer_first_name text,
+  created_at timestamptz
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select
+    r.id,
+    r.rating,
+    r.comment,
+    s.skill,
+    coalesce(nullif(split_part(btrim(reviewer.full_name), ' ', 1), ''), 'A learner'),
+    r.created_at
+  from public.session_reviews r
+  join public.sessions s on s.id = r.session_id
+  join public.profiles reviewer on reviewer.id = r.reviewer_id
+  where (select auth.uid()) is not null
+    and r.teacher_id = p_teacher_id
+    and (
+      p_teacher_id = (select auth.uid())
+      or exists (select 1 from public.profiles t where t.id = p_teacher_id and t.onboarding_complete)
+    )
+  order by r.created_at desc
+  limit least(greatest(coalesce(p_limit, 20), 1), 50);
+$$;
+
+-- Average rating and count for one teacher (used for a teacher's own dashboard).
+create or replace function public.get_teacher_rating(p_teacher_id uuid)
+returns table (rating_average numeric, rating_count integer)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select round(avg(r.rating), 1), count(*)::integer
+  from public.session_reviews r
+  where (select auth.uid()) is not null
+    and r.teacher_id = p_teacher_id
+    and (
+      p_teacher_id = (select auth.uid())
+      or exists (select 1 from public.profiles t where t.id = p_teacher_id and t.onboarding_complete)
+    );
+$$;
+
 -- Lets either participant add or change where they meet until the session ends.
 create or replace function public.set_session_meeting_details(p_session_id uuid, p_meeting_details text)
 returns text
@@ -819,11 +971,17 @@ revoke all on function public.get_public_teachers(uuid) from public, anon;
 revoke all on function public.get_my_sessions() from public, anon;
 revoke all on function public.request_session(uuid, text, timestamptz, numeric, text, text) from public, anon;
 revoke all on function public.set_session_meeting_details(uuid, text) from public, anon;
+revoke all on function public.submit_session_review(uuid, integer, text) from public, anon;
+revoke all on function public.get_teacher_reviews(uuid, integer) from public, anon;
+revoke all on function public.get_teacher_rating(uuid) from public, anon;
 revoke all on function public.act_on_session(uuid, text) from public, anon;
 grant execute on function public.get_public_teachers(uuid) to authenticated;
 grant execute on function public.get_my_sessions() to authenticated;
 grant execute on function public.request_session(uuid, text, timestamptz, numeric, text, text) to authenticated;
 grant execute on function public.set_session_meeting_details(uuid, text) to authenticated;
+grant execute on function public.submit_session_review(uuid, integer, text) to authenticated;
+grant execute on function public.get_teacher_reviews(uuid, integer) to authenticated;
+grant execute on function public.get_teacher_rating(uuid) to authenticated;
 grant execute on function public.act_on_session(uuid, text) to authenticated;
 
 revoke all on function public.release_session_hold(uuid, text) from public, anon, authenticated;
