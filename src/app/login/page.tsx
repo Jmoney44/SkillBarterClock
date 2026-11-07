@@ -29,7 +29,10 @@ export default function LoginPage() {
         return;
       }
 
-      router.push(data.user?.onboardingComplete || data.user?.role === "admin" ? "/" : "/onboarding");
+      // Return to the page the proxy sent them from, if it was a page in this app.
+      const requestedNext = new URLSearchParams(window.location.search).get("next");
+      const next = requestedNext?.startsWith("/") && !requestedNext.startsWith("//") ? requestedNext : "/";
+      router.push(data.user?.onboardingComplete || data.user?.role === "admin" ? next : "/onboarding");
       router.refresh();
     } catch {
       setError("We couldn’t reach the server. Please try again.");

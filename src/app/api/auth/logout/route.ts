@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { ACCESS_COOKIE } from "@/lib/access-cookie";
 
 export async function POST() {
   const supabase = await createSupabaseServerClient();
@@ -9,5 +10,7 @@ export async function POST() {
     return NextResponse.json({ error: "Unable to log out. Please try again." }, { status: 500 });
   }
 
-  return NextResponse.json({ success: true });
+  const response = NextResponse.json({ success: true });
+  response.cookies.delete(ACCESS_COOKIE);
+  return response;
 }

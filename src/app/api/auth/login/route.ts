@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { getProfile } from "@/lib/supabase/profile";
+import { ACCESS_COOKIE } from "@/lib/access-cookie";
 
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => null)) as { email?: string; password?: string } | null;
@@ -22,5 +23,7 @@ export async function POST(request: Request) {
   }
 
   const profile = await getProfile(supabase, data.user);
-  return NextResponse.json({ success: true, user: profile });
+  const response = NextResponse.json({ success: true, user: profile });
+  response.cookies.delete(ACCESS_COOKIE);
+  return response;
 }

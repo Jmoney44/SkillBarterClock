@@ -31,6 +31,17 @@ Members who forget their password can use **Forgot password?** on the login page
 
 Members can upload a JPEG, PNG, or WebP profile photo up to 5 MB from Profile → Edit profile. The image is stored in the public `avatars` bucket; upload and removal are restricted to the signed-in member's own storage folder. Rerun the updated schema if the profile table was already created.
 
+## Page access
+
+`src/proxy.ts` (Next.js Proxy, formerly Middleware) checks each page request on the server before anything renders:
+
+- Signed-out visitors are sent to `/login`, which returns them to the page they asked for after logging in.
+- Signed-in members who haven't finished onboarding are sent to `/onboarding`. Admins are exempt.
+- Signed-in members are sent away from `/login`, `/signup`, and `/forgot-password`, and non-admins away from `/admin`.
+- Expiring Supabase sessions are refreshed.
+
+To avoid a database query on every request, the member's onboarding state and role are cached in a five-minute `sbc-access` cookie. It's cleared when a member logs in, logs out, or finishes onboarding. The proxy only steers navigation: API routes and database functions still check access on every read and write. Supabase verifies sessions locally, without a network call, if the project uses asymmetric JWT signing keys (Supabase → Project Settings → JWT Keys).
+
 ## Sessions and time credits
 
 After applying the schema, the app can list public, onboarding-complete teacher profiles; request a session; accept or decline requests; and start or finish sessions with both participants. A booking holds the learner's credits. A decline or pre-start cancellation returns them, and credits transfer to the teacher only after both people end the session. Session and wallet writes run through authenticated PostgreSQL functions; clients have read-only access to their own session and wallet records.
