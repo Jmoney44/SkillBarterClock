@@ -230,7 +230,7 @@ export default function SettingsPage() {
             <section className="settings-card settings-help-card">
               <span className="settings-section-icon"><Icon name="clock" size={17} /></span>
               <h2>Account at a glance</h2>
-              <p>Your time credits stay safe and are only transferred when a session is completed by both people.</p>
+              <p>Credits for a session are held when it’s booked. They go to the teacher once the session is completed, and come back to you if it’s declined, cancelled, or never starts.</p>
               <Link href="/wallet" className="text-link">View time wallet <Icon name="arrow" size={14} /></Link>
             </section>
             <section className="settings-card settings-logout-card">

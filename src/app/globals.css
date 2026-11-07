@@ -426,3 +426,7 @@ h1 { margin: 7px 0 3px; font-family: var(--font-display), Georgia, serif; font-s
 /* Login: forgot-password link beside the password label */
 .field-label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .field-label-row .text-link { font-size: 10px; font-weight: 600; }
+
+/* Sidebar: fairness details */
+.side-note-details { display: grid; gap: 6px; margin: 10px 0 0; padding-left: 16px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.sidebar { overflow-y: auto; }
