@@ -414,3 +414,11 @@ h1 { margin: 7px 0 3px; font-family: var(--font-display), Georgia, serif; font-s
   .settings-detail-grid { grid-template-columns: 1fr; }
   .profile-popover { right: -4px; }
 }
+/* Meeting details */
+.meeting-details-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.meeting-details-text a { color: var(--teal-deep); font-weight: 700; text-decoration: underline; }
+.meeting-field textarea { width: 100%; min-height: 64px; padding: 10px 12px; color: var(--ink); font: inherit; font-weight: 400; resize: vertical; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; }
+.meeting-field textarea:focus { outline: 3px solid rgba(15, 118, 110, .14); outline-offset: 2px; }
+.meeting-field small { color: var(--muted); font-weight: 400; }
+.meeting-editor { display: grid; gap: 8px; margin: 12px 0 14px; }
+.meeting-editor-actions { display: flex; flex-wrap: wrap; gap: 8px; }

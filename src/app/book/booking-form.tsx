@@ -26,6 +26,7 @@ export default function BookingForm({
   const [minimumDateTime] = useState(() => toLocalDateTime(new Date(Date.now() + 60 * 60 * 1000)));
   const [durationHours, setDurationHours] = useState(1.5);
   const [note, setNote] = useState("");
+  const [meetingDetails, setMeetingDetails] = useState("");
   const [balance, setBalance] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -93,6 +94,7 @@ export default function BookingForm({
           scheduledAt: new Date(scheduledAt).toISOString(),
           durationHours,
           note,
+          meetingDetails,
         }),
       });
       const data = await response.json();
@@ -233,6 +235,18 @@ export default function BookingForm({
                     color: "#24332f",
                   }}
                 />
+              </label>
+
+              <label className="field-wrap meeting-field" style={{ marginBottom: 16 }}>
+                <span>Meeting details <small>(optional)</small></span>
+                <textarea
+                  rows={2}
+                  maxLength={500}
+                  value={meetingDetails}
+                  onChange={(event) => setMeetingDetails(event.target.value)}
+                  placeholder="Video call link, phone number, or meeting place"
+                />
+                <small>Only you and your teacher can see this. Either of you can change it later from the session room.</small>
               </label>
 
               <button className="button button-primary" type="submit" disabled={submitting || !teacherId || !skill} style={{ width: "100%" }}>

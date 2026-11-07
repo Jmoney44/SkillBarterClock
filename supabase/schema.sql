@@ -191,6 +191,15 @@ alter table public.sessions
     or closed_reason in ('declined', 'cancelled', 'expired', 'no_show', 'completed', 'auto_completed')
   );
 
+-- Where the partners meet: a video call link, phone number, or place. Only
+-- participants can read it (through get_my_sessions) or change it.
+alter table public.sessions
+  add column if not exists meeting_details text not null default '';
+alter table public.sessions
+  drop constraint if exists sessions_meeting_details_check;
+alter table public.sessions
+  add constraint sessions_meeting_details_check check (char_length(meeting_details) <= 500);
+
 create index if not exists sessions_active_scheduled_idx
   on public.sessions (scheduled_at)
   where status in ('requested', 'confirmed', 'in_progress');
@@ -317,6 +326,7 @@ returns table (
   started_at timestamptz,
   ended_at timestamptz,
   closed_reason text,
+  meeting_details text,
   created_at timestamptz,
   partner_id uuid,
   partner_name text,
@@ -343,6 +353,7 @@ as $$
     s.started_at,
     s.ended_at,
     s.closed_reason,
+    s.meeting_details,
     s.created_at,
     case when s.learner_id = (select auth.uid()) then s.teacher_id else s.learner_id end,
     p.full_name,
@@ -354,12 +365,14 @@ as $$
   order by s.scheduled_at desc;
 $$;
 
+drop function if exists public.request_session(uuid, text, timestamptz, numeric, text);
 create or replace function public.request_session(
   p_teacher_id uuid,
   p_skill text,
   p_scheduled_at timestamptz,
   p_duration_hours numeric,
-  p_learner_note text default ''
+  p_learner_note text default '',
+  p_meeting_details text default ''
 )
 returns uuid
 language plpgsql
@@ -395,6 +408,9 @@ begin
   end if;
   if char_length(coalesce(p_learner_note, '')) > 500 then
     raise exception using errcode = '22023', message = 'Session note must be 500 characters or fewer.';
+  end if;
+  if char_length(btrim(coalesce(p_meeting_details, ''))) > 500 then
+    raise exception using errcode = '22023', message = 'Meeting details must be 500 characters or fewer.';
   end if;
   if not exists (
     select 1
@@ -445,8 +461,16 @@ begin
     raise exception using errcode = '22023', message = 'You do not have enough available time credits.';
   end if;
 
-  insert into public.sessions (learner_id, teacher_id, skill, scheduled_at, duration_hours, learner_note)
-  values (v_learner_id, p_teacher_id, btrim(p_skill), p_scheduled_at, p_duration_hours, coalesce(p_learner_note, ''))
+  insert into public.sessions (learner_id, teacher_id, skill, scheduled_at, duration_hours, learner_note, meeting_details)
+  values (
+    v_learner_id,
+    p_teacher_id,
+    btrim(p_skill),
+    p_scheduled_at,
+    p_duration_hours,
+    coalesce(p_learner_note, ''),
+    btrim(coalesce(p_meeting_details, ''))
+  )
   returning id into v_session_id;
 
   insert into public.wallet_transactions (user_id, session_id, kind, title, detail, amount)
@@ -754,13 +778,52 @@ begin
 end;
 $$;
 
+-- Lets either participant add or change where they meet until the session ends.
+create or replace function public.set_session_meeting_details(p_session_id uuid, p_meeting_details text)
+returns text
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_session public.sessions%rowtype;
+  v_details text := btrim(coalesce(p_meeting_details, ''));
+begin
+  if v_user_id is null then
+    raise exception using errcode = '28000', message = 'Sign in to manage a session.';
+  end if;
+  if char_length(v_details) > 500 then
+    raise exception using errcode = '22023', message = 'Meeting details must be 500 characters or fewer.';
+  end if;
+
+  select * into v_session
+  from public.sessions
+  where id = p_session_id
+  for update;
+  if not found or v_user_id not in (v_session.learner_id, v_session.teacher_id) then
+    raise exception using errcode = 'P0002', message = 'Session not found.';
+  end if;
+  if v_session.status not in ('requested', 'confirmed', 'in_progress') then
+    raise exception using errcode = '22023', message = 'Meeting details can only be changed before a session ends.';
+  end if;
+
+  update public.sessions
+  set meeting_details = v_details
+  where id = p_session_id;
+  return v_details;
+end;
+$$;
+
 revoke all on function public.get_public_teachers(uuid) from public, anon;
 revoke all on function public.get_my_sessions() from public, anon;
-revoke all on function public.request_session(uuid, text, timestamptz, numeric, text) from public, anon;
+revoke all on function public.request_session(uuid, text, timestamptz, numeric, text, text) from public, anon;
+revoke all on function public.set_session_meeting_details(uuid, text) from public, anon;
 revoke all on function public.act_on_session(uuid, text) from public, anon;
 grant execute on function public.get_public_teachers(uuid) to authenticated;
 grant execute on function public.get_my_sessions() to authenticated;
-grant execute on function public.request_session(uuid, text, timestamptz, numeric, text) to authenticated;
+grant execute on function public.request_session(uuid, text, timestamptz, numeric, text, text) to authenticated;
+grant execute on function public.set_session_meeting_details(uuid, text) to authenticated;
 grant execute on function public.act_on_session(uuid, text) to authenticated;
 
 revoke all on function public.release_session_hold(uuid, text) from public, anon, authenticated;

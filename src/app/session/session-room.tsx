@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AppShell, Avatar, Icon } from "../site";
+import { MeetingDetailsText } from "../meeting-details";
 import { closedReasonLabel, startAvailability, type ClosedReason } from "@/lib/session-rules";
 
 type SessionStatus = "requested" | "confirmed" | "in_progress" | "completed" | "cancelled";
@@ -23,6 +24,7 @@ type SessionRecord = {
   started_at: string | null;
   ended_at: string | null;
   closed_reason: ClosedReason | null;
+  meeting_details: string;
   role: "learner" | "teacher";
   partner_name: string;
   partner_timezone: string;
@@ -44,6 +46,10 @@ export default function SessionRoom({ sessionId }: { sessionId: string }) {
   const [activeAction, setActiveAction] = useState("");
   const [error, setError] = useState("");
   const [now, setNow] = useState(() => Date.now());
+  const [editingMeeting, setEditingMeeting] = useState(false);
+  const [meetingDraft, setMeetingDraft] = useState("");
+  const [savingMeeting, setSavingMeeting] = useState(false);
+  const [meetingError, setMeetingError] = useState("");
 
   const fetchSession = useCallback(async (): Promise<SessionRecord | null> => {
     const response = await fetch("/api/sessions", { cache: "no-store" });
@@ -110,7 +116,32 @@ export default function SessionRoom({ sessionId }: { sessionId: string }) {
     }
   }
 
+  async function saveMeetingDetails() {
+    if (!session) return;
+    setSavingMeeting(true);
+    setMeetingError("");
+    try {
+      const response = await fetch("/api/sessions", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: session.id, action: "set_meeting_details", meetingDetails: meetingDraft }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setMeetingError(data.error || "Could not save the meeting details.");
+        return;
+      }
+      setEditingMeeting(false);
+      await refreshSession();
+    } catch {
+      setMeetingError("We couldn’t reach the server. Please try again.");
+    } finally {
+      setSavingMeeting(false);
+    }
+  }
+
   const scheduled = session ? new Date(session.scheduled_at) : null;
+  const canEditMeeting = Boolean(session && ["requested", "confirmed", "in_progress"].includes(session.status));
   const currentUserStarted = session && (session.role === "learner" ? session.learner_started : session.teacher_started);
   const otherUserStarted = session && (session.role === "learner" ? session.teacher_started : session.learner_started);
   const currentUserEnded = session && (session.role === "learner" ? session.learner_ended : session.teacher_ended);
@@ -207,6 +238,40 @@ export default function SessionRoom({ sessionId }: { sessionId: string }) {
                 <h3>{session.status === "completed" ? "Session complete" : "Your time together"}</h3>
                 <div className="profile-languages"><b>Partner timezone</b><span>{session.partner_timezone || "Not set"}</span></div>
                 <div className="profile-languages"><b>Scheduled for</b><span>{scheduled ? new Intl.DateTimeFormat(undefined, { dateStyle: "full", timeStyle: "short" }).format(scheduled) : "Not set"}</span></div>
+                <div className="profile-languages">
+                  <b>Where to meet</b>
+                  {editingMeeting ? (
+                    <div className="meeting-editor field-wrap meeting-field">
+                      <textarea
+                        rows={3}
+                        maxLength={500}
+                        value={meetingDraft}
+                        onChange={(event) => setMeetingDraft(event.target.value)}
+                        placeholder="Video call link, phone number, or meeting place"
+                        aria-label="Meeting details"
+                      />
+                      {meetingError && <p className="form-error" role="alert">{meetingError}</p>}
+                      <div className="meeting-editor-actions">
+                        <button className="button button-primary small-button" type="button" disabled={savingMeeting} onClick={() => void saveMeetingDetails()}>
+                          {savingMeeting ? "Saving…" : "Save"}
+                        </button>
+                        <button className="button button-secondary small-button" type="button" disabled={savingMeeting} onClick={() => { setEditingMeeting(false); setMeetingError(""); }}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <span>
+                      {session.meeting_details ? <MeetingDetailsText text={session.meeting_details} /> : canEditMeeting ? "Not added yet. Add a video link, phone number, or place." : "No meeting details were added."}
+                      {canEditMeeting && (
+                        <>
+                          {" "}
+                          <button className="text-link" type="button" onClick={() => { setMeetingDraft(session.meeting_details); setEditingMeeting(true); }}>
+                            {session.meeting_details ? "Edit" : "Add meeting details"}
+                          </button>
+                        </>
+                      )}
+                    </span>
+                  )}
+                </div>
                 {session.learner_note && <div className="profile-languages"><b>Learning note</b><span>{session.learner_note}</span></div>}
                 <Link className="text-link" href="/sessions">View all sessions <Icon name="arrow" size={13} /></Link>
               </div>

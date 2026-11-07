@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AppShell, Avatar, Icon } from "../site";
+import { MeetingDetailsText } from "../meeting-details";
 import { closedReasonLabel, startAvailability, type ClosedReason } from "@/lib/session-rules";
 
 type SessionStatus = "requested" | "confirmed" | "in_progress" | "completed" | "cancelled";
@@ -17,6 +18,7 @@ type SessionRecord = {
   status: SessionStatus;
   learner_note: string;
   closed_reason: ClosedReason | null;
+  meeting_details: string;
   role: "learner" | "teacher";
   partner_id: string;
   partner_name: string;
@@ -154,6 +156,9 @@ export default function SessionsPage() {
                 <strong>{session.skill}</strong>
                 <span>{session.role === "learner" ? "Teaching by" : "Learning with"} {session.partner_name} <i>·</i> {new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(scheduled)}</span>
                 <small><Icon name="clock" size={14} /> {Number(session.duration_hours)} hour{Number(session.duration_hours) === 1 ? "" : "s"} <i>·</i> {session.role === "learner" ? "You’re learning" : "You’re teaching"}</small>
+                {["requested", "confirmed", "in_progress"].includes(session.status) && (
+                  <small>{session.meeting_details ? <>Meet: <MeetingDetailsText text={session.meeting_details} /></> : "No meeting details yet. Add them in the session room."}</small>
+                )}
                 {session.status === "confirmed" && start.hint && <small>{start.hint}</small>}
               </div>
               <span className={`status-pill ${session.status === "completed" ? "status-done" : ["requested", "in_progress"].includes(session.status) ? "status-wait" : ""}`}><i />{statusLabel(session.status, session.closed_reason)}</span>

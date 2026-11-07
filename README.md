@@ -28,6 +28,8 @@ After applying the schema, the app can list public, onboarding-complete teacher 
 
 The session policy currently requires requests at least one hour ahead and within 90 days, with durations from 30 minutes to 4 hours in 30-minute increments. The app's booking form and database function both enforce these limits.
 
+Each session has an optional "where to meet" field for a video call link, phone number, or meeting place (up to 500 characters). The learner can add it when booking, and either participant can change it from the session room until the session ends. Only the two participants can see it, and only `http`/`https` links are made clickable.
+
 Held credits never stay stuck. The database enforces these timing rules:
 
 - A teacher can accept a request only before its scheduled time. An unanswered request expires at its scheduled time and the learner's credits are returned.

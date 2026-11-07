@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { PublicProfile } from "@/lib/supabase/profile";
 import { AppShell, Avatar, Icon } from "../site";
+import { MeetingDetailsText } from "../meeting-details";
 import { startAvailability } from "@/lib/session-rules";
 
 type TeachingSession = {
@@ -14,6 +15,7 @@ type TeachingSession = {
   duration_hours: number | string;
   status: "requested" | "confirmed" | "in_progress" | "completed" | "cancelled";
   learner_note: string;
+  meeting_details: string;
   role: "learner" | "teacher";
   partner_name: string;
 };
@@ -211,6 +213,7 @@ export default function TeacherDashboardPage() {
                       <div className="teacher-session-title"><b>{session.skill}</b><span className="admin-badge">New request</span></div>
                       <span>{session.partner_name} · {formatDate(session.scheduled_at)}</span>
                       <small>{Number(session.duration_hours)} hour{Number(session.duration_hours) === 1 ? "" : "s"} · {Number(session.duration_hours).toFixed(1)} TC to earn</small>
+                      {session.meeting_details && <small>Meet: <MeetingDetailsText text={session.meeting_details} /></small>}
                       {session.learner_note && <p className="teacher-learner-note">“{session.learner_note}”</p>}
                     </div>
                     <div className="teacher-session-actions">
@@ -247,6 +250,7 @@ export default function TeacherDashboardPage() {
                       <div className="teacher-session-title"><b>{session.skill}</b><span className={`admin-badge ${session.status === "in_progress" ? "complete" : ""}`}>{statusLabel(session.status)}</span></div>
                       <span>Learning with {session.partner_name} · {formatDate(session.scheduled_at)}</span>
                       <small>{Number(session.duration_hours)} hour{Number(session.duration_hours) === 1 ? "" : "s"}</small>
+                      <small>{session.meeting_details ? <>Meet: <MeetingDetailsText text={session.meeting_details} /></> : "No meeting details yet. Add them in the session room."}</small>
                       {session.status === "confirmed" && start.hint && <small>{start.hint}</small>}
                     </div>
                     <div className="teacher-session-actions">
