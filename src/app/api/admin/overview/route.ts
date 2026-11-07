@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-export async function GET() {
+export async function GET(request: Request) {
   const supabase = await createSupabaseServerClient();
   const { data: { user }, error: authError } = await supabase.auth.getUser();
 
@@ -9,7 +9,8 @@ export async function GET() {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
-  const { data, error } = await supabase.rpc("get_admin_overview");
+  const search = new URL(request.url).searchParams.get("q")?.slice(0, 100) || null;
+  const { data, error } = await supabase.rpc("get_admin_overview", { p_search: search });
   if (error) {
     if (error.code === "42501") {
       return NextResponse.json({ error: "Admin access required." }, { status: 403 });

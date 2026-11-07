@@ -24,6 +24,10 @@ alter table public.profiles
 alter table public.profiles
   add column if not exists deleted_at timestamptz;
 alter table public.profiles
+  add column if not exists suspended_at timestamptz;
+alter table public.profiles
+  add column if not exists suspension_reason text;
+alter table public.profiles
   drop constraint if exists profiles_role_check;
 alter table public.profiles
   add constraint profiles_role_check check (role in ('member', 'admin'));
@@ -190,7 +194,7 @@ alter table public.sessions
 alter table public.sessions
   add constraint sessions_closed_reason_check check (
     closed_reason is null
-    or closed_reason in ('declined', 'cancelled', 'expired', 'no_show', 'completed', 'auto_completed')
+    or closed_reason in ('declined', 'cancelled', 'expired', 'no_show', 'completed', 'auto_completed', 'admin_cancelled', 'admin_completed')
   );
 
 -- Where the partners meet: a video call link, phone number, or place. Only
@@ -221,6 +225,11 @@ create table if not exists public.wallet_transactions (
   amount numeric(10, 2) not null check (amount <> 0),
   created_at timestamptz not null default now()
 );
+
+alter table public.wallet_transactions
+  drop constraint if exists wallet_transactions_kind_check;
+alter table public.wallet_transactions
+  add constraint wallet_transactions_kind_check check (kind in ('starter', 'hold', 'refund', 'earned', 'adjustment'));
 
 create index if not exists wallet_transactions_user_created_idx
   on public.wallet_transactions (user_id, created_at desc);
@@ -347,6 +356,11 @@ create table if not exists public.session_reviews (
   check (reviewer_id <> teacher_id)
 );
 
+alter table public.session_reviews
+  add column if not exists hidden_at timestamptz;
+alter table public.session_reviews
+  add column if not exists hidden_reason text;
+
 create index if not exists session_reviews_teacher_created_idx
   on public.session_reviews (teacher_id, created_at desc);
 
@@ -404,8 +418,10 @@ as $$
     select round(avg(r.rating), 1) as rating_average, count(*)::integer as rating_count
     from public.session_reviews r
     where r.teacher_id = p.id
+      and r.hidden_at is null
   ) ratings on true
   where p.onboarding_complete
+    and p.suspended_at is null
     and p.id <> (select auth.uid())
     and (p_teacher_id is null or p.id = p_teacher_id)
   order by p.created_at desc
@@ -475,6 +491,21 @@ as $$
 $$;
 
 drop function if exists public.request_session(uuid, text, timestamptz, numeric, text);
+-- Raises if the signed-in member is suspended. Called by every member action.
+create or replace function public.assert_active_member()
+returns void
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+  if exists (select 1 from public.profiles p where p.id = auth.uid() and p.suspended_at is not null) then
+    raise exception using errcode = '42501', message = 'Your account is suspended. Contact the community team if you think this is a mistake.';
+  end if;
+end;
+$$;
+
 create or replace function public.request_session(
   p_teacher_id uuid,
   p_skill text,
@@ -496,6 +527,7 @@ begin
   if v_learner_id is null then
     raise exception using errcode = '28000', message = 'Sign in to book a session.';
   end if;
+  perform public.assert_active_member();
   if p_teacher_id is null or p_teacher_id = v_learner_id then
     raise exception using errcode = '22023', message = 'Choose another community member.';
   end if;
@@ -534,6 +566,7 @@ begin
     from public.profiles p
     where p.id = p_teacher_id
       and p.onboarding_complete
+      and p.suspended_at is null
       and btrim(p.full_name) <> ''
       and btrim(p_skill) = any(p.teaching_skills)
   ) then
@@ -614,7 +647,7 @@ as $$
 declare
   v_session public.sessions%rowtype;
 begin
-  if p_reason is null or p_reason not in ('declined', 'cancelled', 'expired', 'no_show') then
+  if p_reason is null or p_reason not in ('declined', 'cancelled', 'expired', 'no_show', 'admin_cancelled') then
     raise exception using errcode = '22023', message = 'Choose a valid reason to release session credits.';
   end if;
 
@@ -622,7 +655,12 @@ begin
   from public.sessions
   where id = p_session_id
   for update;
-  if not found or v_session.status not in ('requested', 'confirmed') then
+  if not found
+    or not (
+      v_session.status in ('requested', 'confirmed')
+      or (v_session.status = 'in_progress' and p_reason = 'admin_cancelled')
+    )
+  then
     raise exception using errcode = '22023', message = 'A session can only be cancelled before it starts.';
   end if;
 
@@ -653,6 +691,7 @@ begin
       when 'declined' then 'Request declined: credits returned'
       when 'expired' then 'Request expired: credits returned'
       when 'no_show' then 'Session not started: credits returned'
+      when 'admin_cancelled' then 'Cancelled by the community team: credits returned'
       else 'Session credits returned'
     end,
     v_session.skill,
@@ -672,7 +711,7 @@ as $$
 declare
   v_session public.sessions%rowtype;
 begin
-  if p_reason is null or p_reason not in ('completed', 'auto_completed') then
+  if p_reason is null or p_reason not in ('completed', 'auto_completed', 'admin_completed') then
     raise exception using errcode = '22023', message = 'Choose a valid reason to complete a session.';
   end if;
 
@@ -680,7 +719,12 @@ begin
   from public.sessions
   where id = p_session_id
   for update;
-  if not found or v_session.status <> 'in_progress' then
+  if not found
+    or not (
+      v_session.status = 'in_progress'
+      or (v_session.status = 'confirmed' and p_reason = 'admin_completed')
+    )
+  then
     raise exception using errcode = '22023', message = 'Only a session in progress can be completed.';
   end if;
 
@@ -704,6 +748,7 @@ begin
 
   update public.sessions
   set status = 'completed',
+      started_at = coalesce(started_at, scheduled_at),
       ended_at = coalesce(ended_at, now()),
       closed_reason = p_reason
   where id = p_session_id;
@@ -713,7 +758,11 @@ begin
     v_session.teacher_id,
     p_session_id,
     'earned',
-    case when p_reason = 'auto_completed' then 'Session auto-completed' else 'Session completed' end,
+    case p_reason
+      when 'auto_completed' then 'Session auto-completed'
+      when 'admin_completed' then 'Session completed by the community team'
+      else 'Session completed'
+    end,
     v_session.skill,
     v_session.duration_hours
   );
@@ -803,6 +852,7 @@ begin
   if v_user_id is null then
     raise exception using errcode = '28000', message = 'Sign in to manage a session.';
   end if;
+  perform public.assert_active_member();
   if p_action is null or p_action not in ('accept', 'decline', 'start', 'end', 'cancel') then
     raise exception using errcode = '22023', message = 'Choose a valid session action.';
   end if;
@@ -907,6 +957,7 @@ begin
   if v_user_id is null then
     raise exception using errcode = '28000', message = 'Sign in to review a session.';
   end if;
+  perform public.assert_active_member();
   if p_rating is null or p_rating not between 1 and 5 then
     raise exception using errcode = '22023', message = 'Choose a rating from 1 to 5 stars.';
   end if;
@@ -973,6 +1024,7 @@ as $$
   join public.profiles reviewer on reviewer.id = r.reviewer_id
   where (select auth.uid()) is not null
     and r.teacher_id = p_teacher_id
+    and r.hidden_at is null
     and (
       p_teacher_id = (select auth.uid())
       or exists (select 1 from public.profiles t where t.id = p_teacher_id and t.onboarding_complete)
@@ -993,6 +1045,7 @@ as $$
   from public.session_reviews r
   where (select auth.uid()) is not null
     and r.teacher_id = p_teacher_id
+    and r.hidden_at is null
     and (
       p_teacher_id = (select auth.uid())
       or exists (select 1 from public.profiles t where t.id = p_teacher_id and t.onboarding_complete)
@@ -1012,6 +1065,7 @@ begin
   if v_user_id is null then
     raise exception using errcode = '28000', message = 'Sign in to set your availability.';
   end if;
+  perform public.assert_active_member();
   if p_time_zone is null or not exists (select 1 from pg_catalog.pg_timezone_names where name = p_time_zone) then
     raise exception using errcode = '22023', message = 'Choose a valid time zone.';
   end if;
@@ -1151,6 +1205,7 @@ begin
   if v_user_id is null then
     raise exception using errcode = '28000', message = 'Sign in to manage a session.';
   end if;
+  perform public.assert_active_member();
   if char_length(v_details) > 500 then
     raise exception using errcode = '22023', message = 'Meeting details must be 500 characters or fewer.';
   end if;
@@ -1219,79 +1274,8 @@ begin
 end;
 $$;
 
-create or replace function public.get_admin_overview()
-returns jsonb
-language plpgsql
-stable
-security definer
-set search_path = ''
-as $$
-declare
-  v_result jsonb;
-begin
-  if not exists (
-    select 1 from public.profiles p
-    where p.id = (select auth.uid()) and p.role = 'admin'
-  ) then
-    raise exception using errcode = '42501', message = 'Admin access required.';
-  end if;
-
-  select jsonb_build_object(
-    'stats', jsonb_build_object(
-      'members', (select count(*) from public.profiles),
-      'onboardedMembers', (select count(*) from public.profiles where onboarding_complete),
-      'sessions', (select count(*) from public.sessions),
-      'pendingRequests', (select count(*) from public.sessions where status = 'requested'),
-      'activeSessions', (select count(*) from public.sessions where status in ('confirmed', 'in_progress')),
-      'completedSessions', (select count(*) from public.sessions where status = 'completed')
-    ),
-    'members', coalesce((
-      select jsonb_agg(to_jsonb(member_row) order by member_row.created_at desc)
-      from (
-        select
-          p.id,
-          p.full_name,
-          u.email,
-          p.location,
-          p.timezone,
-          p.onboarding_complete,
-          p.role,
-          p.credit_balance,
-          p.pending_credits,
-          p.created_at
-        from public.profiles p
-        left join auth.users u on u.id = p.id
-        order by p.created_at desc
-        limit 100
-      ) member_row
-    ), '[]'::jsonb),
-    'recentSessions', coalesce((
-      select jsonb_agg(to_jsonb(session_row) order by session_row.created_at desc)
-      from (
-        select
-          s.id,
-          s.skill,
-          s.scheduled_at,
-          s.duration_hours,
-          s.status,
-          s.created_at,
-          learner.full_name as learner_name,
-          teacher.full_name as teacher_name
-        from public.sessions s
-        join public.profiles learner on learner.id = s.learner_id
-        join public.profiles teacher on teacher.id = s.teacher_id
-        order by s.created_at desc
-        limit 100
-      ) session_row
-    ), '[]'::jsonb)
-  ) into v_result;
-
-  return v_result;
-end;
-$$;
-
-revoke all on function public.get_admin_overview() from public, anon;
-grant execute on function public.get_admin_overview() to authenticated;
+-- get_admin_overview is defined in the Admin tools section at the end of this file.
+drop function if exists public.get_admin_overview();
 
 create table if not exists public.admin_announcements (
   id uuid primary key default gen_random_uuid(),
@@ -1438,7 +1422,7 @@ begin
           perform public.enqueue_notification(new.teacher_id, 'session_cancelled', new.id);
         end if;
       end if;
-    elsif new.status = 'completed' and new.closed_reason = 'auto_completed' then
+    elsif new.status = 'completed' and new.closed_reason in ('auto_completed', 'admin_completed') then
       perform public.enqueue_notification(new.learner_id, 'session_auto_completed', new.id);
       perform public.enqueue_notification(new.teacher_id, 'session_auto_completed', new.id);
     end if;
@@ -1510,7 +1494,8 @@ $$;
 -- sessions and queues reminders, so it doubles as the scheduler when pg_cron
 -- isn't enabled. Claimed rows are leased with a growing back-off so a crashed
 -- send is retried (up to 5 attempts).
-create or replace function public.claim_notifications(p_limit integer default 25)
+drop function if exists public.claim_notifications(integer);
+create function public.claim_notifications(p_limit integer default 25)
 returns table (
   id uuid,
   kind text,
@@ -1523,6 +1508,7 @@ returns table (
   duration_hours numeric,
   meeting_details text,
   session_status text,
+  closed_reason text,
   recipient_role text,
   partner_name text,
   review_rating smallint,
@@ -1574,6 +1560,7 @@ begin
     s.duration_hours,
     s.meeting_details,
     s.status,
+    s.closed_reason,
     case when s.learner_id = c.recipient_id then 'learner' else 'teacher' end,
     partner.full_name,
     r.rating,
@@ -1700,3 +1687,382 @@ for each row execute function public.handle_auth_user_deleted();
 
 revoke all on function public.close_member_account(uuid) from public, anon, authenticated;
 revoke all on function public.handle_auth_user_deleted() from public, anon, authenticated;
+
+-- ---------------------------------------------------------------------------
+-- Admin tools
+-- Every admin action goes through one of these functions, which check the
+-- caller is an admin, refuse to act on the admin themselves, and record the
+-- action and reason in admin_actions.
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.admin_actions (
+  id uuid primary key default gen_random_uuid(),
+  admin_id uuid references public.profiles (id) on delete set null,
+  action text not null,
+  target_user_id uuid,
+  session_id uuid,
+  review_id uuid,
+  amount numeric(10, 2),
+  reason text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists admin_actions_created_idx on public.admin_actions (created_at desc);
+
+alter table public.admin_actions enable row level security;
+revoke all on public.admin_actions from anon, authenticated;
+
+create or replace function public.assert_admin()
+returns uuid
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+  if not exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.role = 'admin' and p.suspended_at is null and p.deleted_at is null
+  ) then
+    raise exception using errcode = '42501', message = 'Admin access required.';
+  end if;
+  return auth.uid();
+end;
+$$;
+
+create or replace function public.admin_log(
+  p_action text,
+  p_reason text,
+  p_target_user_id uuid default null,
+  p_session_id uuid default null,
+  p_review_id uuid default null,
+  p_amount numeric default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_reason text := btrim(coalesce(p_reason, ''));
+begin
+  if char_length(v_reason) not between 3 and 300 then
+    raise exception using errcode = '22023', message = 'Give a reason of 3 to 300 characters.';
+  end if;
+  insert into public.admin_actions (admin_id, action, target_user_id, session_id, review_id, amount, reason)
+  values (auth.uid(), p_action, p_target_user_id, p_session_id, p_review_id, p_amount, v_reason);
+end;
+$$;
+
+-- Loads a member for an admin action, refusing the admin themselves, other admins, and deleted members.
+create or replace function public.admin_target_member(p_user_id uuid)
+returns public.profiles
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_admin_id uuid := public.assert_admin();
+  v_member public.profiles%rowtype;
+begin
+  if p_user_id = v_admin_id then
+    raise exception using errcode = '22023', message = 'You can''t use admin tools on your own account.';
+  end if;
+  select * into v_member from public.profiles where id = p_user_id for update;
+  if not found or v_member.deleted_at is not null then
+    raise exception using errcode = 'P0002', message = 'Member not found.';
+  end if;
+  if v_member.role = 'admin' then
+    raise exception using errcode = '22023', message = 'Change this admin''s role to member before using admin tools on them.';
+  end if;
+  return v_member;
+end;
+$$;
+
+-- Suspends a member: blocks their actions, hides them from Explore, and
+-- cancels their requested and confirmed sessions with refunds.
+create or replace function public.admin_suspend_member(p_user_id uuid, p_reason text)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_member public.profiles%rowtype := public.admin_target_member(p_user_id);
+  v_session record;
+begin
+  if v_member.suspended_at is not null then
+    raise exception using errcode = '22023', message = 'This member is already suspended.';
+  end if;
+  perform public.admin_log('suspend_member', p_reason, p_user_id);
+
+  update public.profiles
+  set suspended_at = now(), suspension_reason = btrim(p_reason)
+  where id = p_user_id;
+
+  for v_session in
+    select s.id from public.sessions s
+    where s.status in ('requested', 'confirmed')
+      and p_user_id in (s.learner_id, s.teacher_id)
+    order by s.id
+  loop
+    perform public.release_session_hold(v_session.id, 'admin_cancelled');
+  end loop;
+end;
+$$;
+
+create or replace function public.admin_unsuspend_member(p_user_id uuid, p_reason text)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_member public.profiles%rowtype := public.admin_target_member(p_user_id);
+begin
+  if v_member.suspended_at is null then
+    raise exception using errcode = '22023', message = 'This member isn''t suspended.';
+  end if;
+  perform public.admin_log('unsuspend_member', p_reason, p_user_id);
+  update public.profiles set suspended_at = null, suspension_reason = null where id = p_user_id;
+end;
+$$;
+
+-- Adds (positive) or removes (negative) available credits, recorded in the member's wallet.
+create or replace function public.admin_adjust_credits(p_user_id uuid, p_amount numeric, p_reason text)
+returns numeric
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_member public.profiles%rowtype := public.admin_target_member(p_user_id);
+  v_balance numeric;
+begin
+  if p_amount is null or p_amount = 0 or abs(p_amount) > 100 or p_amount <> round(p_amount, 2) then
+    raise exception using errcode = '22023', message = 'Enter an amount between -100 and 100 credits, other than 0.';
+  end if;
+  if v_member.credit_balance + p_amount < 0 then
+    raise exception using errcode = '22023', message = 'That would leave the member with a negative balance.';
+  end if;
+  perform public.admin_log('adjust_credits', p_reason, p_user_id, null, null, p_amount);
+
+  update public.profiles
+  set credit_balance = credit_balance + p_amount
+  where id = p_user_id
+  returning credit_balance into v_balance;
+
+  insert into public.wallet_transactions (user_id, kind, title, detail, amount)
+  values (
+    p_user_id,
+    'adjustment',
+    case when p_amount > 0 then 'Credits added by the community team' else 'Credits removed by the community team' end,
+    left(btrim(p_reason), 200),
+    p_amount
+  );
+  return v_balance;
+end;
+$$;
+
+create or replace function public.admin_set_review_hidden(p_review_id uuid, p_hidden boolean, p_reason text)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_review public.session_reviews%rowtype;
+begin
+  perform public.assert_admin();
+  select * into v_review from public.session_reviews where id = p_review_id for update;
+  if not found then
+    raise exception using errcode = 'P0002', message = 'Review not found.';
+  end if;
+  if (v_review.hidden_at is not null) = p_hidden then
+    raise exception using errcode = '22023', message = case when p_hidden then 'This review is already hidden.' else 'This review isn''t hidden.' end;
+  end if;
+  perform public.admin_log(case when p_hidden then 'hide_review' else 'unhide_review' end, p_reason, v_review.teacher_id, v_review.session_id, p_review_id);
+  update public.session_reviews
+  set hidden_at = case when p_hidden then now() end,
+      hidden_reason = case when p_hidden then btrim(p_reason) end
+  where id = p_review_id;
+end;
+$$;
+
+-- Cancels an open session (including one in progress) and refunds the learner,
+-- or ('complete') closes a confirmed or in-progress session and pays the teacher.
+create or replace function public.admin_resolve_session(p_session_id uuid, p_resolution text, p_reason text)
+returns text
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_session public.sessions%rowtype;
+begin
+  perform public.assert_admin();
+  if p_resolution is null or p_resolution not in ('cancel', 'complete') then
+    raise exception using errcode = '22023', message = 'Choose to cancel or complete the session.';
+  end if;
+  select * into v_session from public.sessions where id = p_session_id for update;
+  if not found then
+    raise exception using errcode = 'P0002', message = 'Session not found.';
+  end if;
+  if auth.uid() in (v_session.learner_id, v_session.teacher_id) then
+    raise exception using errcode = '22023', message = 'You can''t use admin tools on your own sessions.';
+  end if;
+  perform public.admin_log(p_resolution || '_session', p_reason, null, p_session_id);
+
+  if p_resolution = 'cancel' then
+    if v_session.status not in ('requested', 'confirmed', 'in_progress') then
+      raise exception using errcode = '22023', message = 'Only an open session can be cancelled.';
+    end if;
+    perform public.release_session_hold(p_session_id, 'admin_cancelled');
+    return 'cancelled';
+  end if;
+
+  if v_session.status not in ('confirmed', 'in_progress') then
+    raise exception using errcode = '22023', message = 'Only a confirmed or in-progress session can be completed.';
+  end if;
+  perform public.complete_session(p_session_id, 'admin_completed');
+  return 'completed';
+end;
+$$;
+
+create or replace function public.admin_delete_announcement(p_announcement_id uuid, p_reason text)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  perform public.assert_admin();
+  delete from public.admin_announcements where id = p_announcement_id;
+  if not found then
+    raise exception using errcode = 'P0002', message = 'Announcement not found.';
+  end if;
+  perform public.admin_log('delete_announcement', p_reason);
+end;
+$$;
+
+drop function if exists public.get_admin_overview(text);
+create function public.get_admin_overview(p_search text default null)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+  v_search text := nullif(btrim(coalesce(p_search, '')), '');
+  v_result jsonb;
+begin
+  perform public.assert_admin();
+
+  select jsonb_build_object(
+    'stats', jsonb_build_object(
+      'members', (select count(*) from public.profiles where deleted_at is null),
+      'onboardedMembers', (select count(*) from public.profiles where onboarding_complete and deleted_at is null),
+      'suspendedMembers', (select count(*) from public.profiles where suspended_at is not null),
+      'sessions', (select count(*) from public.sessions),
+      'pendingRequests', (select count(*) from public.sessions where status = 'requested'),
+      'activeSessions', (select count(*) from public.sessions where status in ('confirmed', 'in_progress')),
+      'completedSessions', (select count(*) from public.sessions where status = 'completed'),
+      'hiddenReviews', (select count(*) from public.session_reviews where hidden_at is not null)
+    ),
+    'members', coalesce((
+      select jsonb_agg(to_jsonb(member_row) order by member_row.created_at desc)
+      from (
+        select
+          p.id, p.full_name, u.email, p.location, p.timezone, p.onboarding_complete, p.role,
+          p.credit_balance, p.pending_credits, p.suspended_at, p.suspension_reason, p.deleted_at, p.created_at
+        from public.profiles p
+        left join auth.users u on u.id = p.id
+        where v_search is null
+          or p.full_name ilike '%' || v_search || '%'
+          or u.email ilike '%' || v_search || '%'
+        order by p.created_at desc
+        limit 100
+      ) member_row
+    ), '[]'::jsonb),
+    'recentSessions', coalesce((
+      select jsonb_agg(to_jsonb(session_row) order by session_row.open desc, session_row.scheduled_at desc)
+      from (
+        select
+          s.id, s.skill, s.scheduled_at, s.duration_hours, s.status, s.closed_reason,
+          s.learner_started, s.teacher_started, s.learner_ended, s.teacher_ended, s.created_at,
+          s.status in ('requested', 'confirmed', 'in_progress') as open,
+          learner.full_name as learner_name,
+          teacher.full_name as teacher_name
+        from public.sessions s
+        join public.profiles learner on learner.id = s.learner_id
+        join public.profiles teacher on teacher.id = s.teacher_id
+        order by (s.status in ('requested', 'confirmed', 'in_progress')) desc, s.scheduled_at desc
+        limit 100
+      ) session_row
+    ), '[]'::jsonb),
+    'reviews', coalesce((
+      select jsonb_agg(to_jsonb(review_row) order by review_row.created_at desc)
+      from (
+        select
+          r.id, r.rating, r.comment, r.hidden_at, r.hidden_reason, r.created_at, s.skill,
+          reviewer.full_name as reviewer_name,
+          teacher.full_name as teacher_name
+        from public.session_reviews r
+        join public.sessions s on s.id = r.session_id
+        join public.profiles reviewer on reviewer.id = r.reviewer_id
+        join public.profiles teacher on teacher.id = r.teacher_id
+        order by r.created_at desc
+        limit 50
+      ) review_row
+    ), '[]'::jsonb),
+    'announcements', coalesce((
+      select jsonb_agg(to_jsonb(a) order by a.created_at desc)
+      from (
+        select id, title, message, created_at
+        from public.admin_announcements
+        order by created_at desc
+        limit 20
+      ) a
+    ), '[]'::jsonb),
+    'actions', coalesce((
+      select jsonb_agg(to_jsonb(action_row) order by action_row.created_at desc)
+      from (
+        select
+          a.id, a.action, a.amount, a.reason, a.created_at,
+          coalesce(admin.full_name, 'Former admin') as admin_name,
+          target.full_name as target_name,
+          s.skill as session_skill
+        from public.admin_actions a
+        left join public.profiles admin on admin.id = a.admin_id
+        left join public.profiles target on target.id = a.target_user_id
+        left join public.sessions s on s.id = a.session_id
+        order by a.created_at desc
+        limit 50
+      ) action_row
+    ), '[]'::jsonb)
+  ) into v_result;
+
+  return v_result;
+end;
+$$;
+
+revoke all on function public.assert_active_member() from public, anon;
+grant execute on function public.assert_active_member() to authenticated;
+revoke all on function public.assert_admin() from public, anon, authenticated;
+revoke all on function public.admin_log(text, text, uuid, uuid, uuid, numeric) from public, anon, authenticated;
+revoke all on function public.admin_target_member(uuid) from public, anon, authenticated;
+revoke all on function public.admin_suspend_member(uuid, text) from public, anon;
+revoke all on function public.admin_unsuspend_member(uuid, text) from public, anon;
+revoke all on function public.admin_adjust_credits(uuid, numeric, text) from public, anon;
+revoke all on function public.admin_set_review_hidden(uuid, boolean, text) from public, anon;
+revoke all on function public.admin_resolve_session(uuid, text, text) from public, anon;
+revoke all on function public.admin_delete_announcement(uuid, text) from public, anon;
+revoke all on function public.get_admin_overview(text) from public, anon;
+grant execute on function public.admin_suspend_member(uuid, text) to authenticated;
+grant execute on function public.admin_unsuspend_member(uuid, text) to authenticated;
+grant execute on function public.admin_adjust_credits(uuid, numeric, text) to authenticated;
+grant execute on function public.admin_set_review_hidden(uuid, boolean, text) to authenticated;
+grant execute on function public.admin_resolve_session(uuid, text, text) to authenticated;
+grant execute on function public.admin_delete_announcement(uuid, text) to authenticated;
+grant execute on function public.get_admin_overview(text) to authenticated;

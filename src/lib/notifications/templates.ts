@@ -13,6 +13,7 @@ export type ClaimedNotification = {
   duration_hours: number | string | null;
   meeting_details: string | null;
   session_status: string | null;
+  closed_reason: string | null;
   recipient_role: "learner" | "teacher";
   partner_name: string | null;
   review_rating: number | null;
@@ -81,9 +82,11 @@ export function renderNotification(row: ClaimedNotification, siteUrl: string): R
       break;
     case "session_cancelled":
       subject = `${skill} session on ${new Date(row.scheduled_at).toISOString().slice(0, 10)} was cancelled`;
-      lines = [partnerDeleted
-        ? `Your ${skill} session for ${when} was cancelled because your partner closed their account.`
-        : `${partner} cancelled your ${skill} session for ${when}.`, row.recipient_role === "learner" ? `Your ${hours.toFixed(1)} time credits have been returned to your wallet.` : "No credits were transferred."];
+      lines = [row.closed_reason === "admin_cancelled"
+        ? `The community team cancelled your ${skill} session with ${partner} for ${when}.`
+        : partnerDeleted
+          ? `Your ${skill} session for ${when} was cancelled because your partner closed their account.`
+          : `${partner} cancelled your ${skill} session for ${when}.`, row.recipient_role === "learner" ? `Your ${hours.toFixed(1)} time credits have been returned to your wallet.` : "No credits were transferred."];
       action = { label: "View your sessions", url: `${siteUrl}/sessions` };
       break;
     case "session_not_started":
@@ -92,8 +95,12 @@ export function renderNotification(row: ClaimedNotification, siteUrl: string): R
       action = { label: "View your sessions", url: `${siteUrl}/sessions` };
       break;
     case "session_auto_completed":
-      subject = `Your ${skill} session was completed automatically`;
-      lines = [`Your ${skill} session with ${partner} wasn’t ended by both of you, so it was completed automatically an hour after it should have finished.`, row.recipient_role === "teacher" ? `${hours.toFixed(1)} time credits have been added to your wallet.` : `${hours.toFixed(1)} time credits were transferred to ${partner}. You can leave a review for 30 days.`];
+      subject = row.closed_reason === "admin_completed"
+        ? `Your ${skill} session was marked complete`
+        : `Your ${skill} session was completed automatically`;
+      lines = [row.closed_reason === "admin_completed"
+        ? `The community team marked your ${skill} session with ${partner} as complete.`
+        : `Your ${skill} session with ${partner} wasn’t ended by both of you, so it was completed automatically an hour after it should have finished.`, row.recipient_role === "teacher" ? `${hours.toFixed(1)} time credits have been added to your wallet.` : `${hours.toFixed(1)} time credits were transferred to ${partner}. You can leave a review for 30 days.`];
       break;
     case "meeting_details_changed":
       if (!activeStatuses.includes(status) || !row.meeting_details) return { skip: "not_active" };

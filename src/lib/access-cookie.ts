@@ -10,16 +10,22 @@ export type MemberAccess = {
   userId: string;
   onboarded: boolean;
   role: "member" | "admin";
+  suspended: boolean;
 };
 
 export function serializeAccess(access: MemberAccess) {
-  return `${access.userId}|${access.onboarded ? 1 : 0}|${access.role}`;
+  return `${access.userId}|${access.onboarded ? 1 : 0}|${access.role}|${access.suspended ? 1 : 0}`;
 }
 
 export function parseAccess(value: string | undefined): MemberAccess | null {
-  const [userId, onboarded, role] = value?.split("|") ?? [];
-  if (!userId || (onboarded !== "0" && onboarded !== "1") || (role !== "member" && role !== "admin")) {
+  const [userId, onboarded, role, suspended] = value?.split("|") ?? [];
+  if (
+    !userId
+    || (onboarded !== "0" && onboarded !== "1")
+    || (role !== "member" && role !== "admin")
+    || (suspended !== "0" && suspended !== "1")
+  ) {
     return null;
   }
-  return { userId, onboarded: onboarded === "1", role };
+  return { userId, onboarded: onboarded === "1", role, suspended: suspended === "1" };
 }

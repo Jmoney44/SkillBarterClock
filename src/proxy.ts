@@ -13,6 +13,7 @@ import {
 const guestOnlyPaths = ["/login", "/signup", "/forgot-password"];
 // Reachable either way: email link handlers and the reset form.
 const openPaths = ["/auth", "/reset-password", "/account-deleted"];
+const suspendedPath = "/suspended";
 
 function matchesPath(pathname: string, prefixes: string[]) {
   return prefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
@@ -73,6 +74,11 @@ export async function proxy(request: NextRequest) {
   const access = await getAccess(request, response, supabase, userId);
   if (!access) return response; // Profile unavailable: let the page show its own error.
 
+  if (access.suspended) {
+    return pathname === suspendedPath ? response : redirectTo(suspendedPath);
+  }
+  if (pathname === suspendedPath) return redirectTo("/");
+
   const canUseApp = access.onboarded || access.role === "admin";
 
   if (matchesPath(pathname, guestOnlyPaths)) {
@@ -98,9 +104,9 @@ async function getAccess(
 
   const { data: profile, error } = await supabase
     .from("profiles")
-    .select("onboarding_complete, role")
+    .select("onboarding_complete, role, suspended_at")
     .eq("id", userId)
-    .single<{ onboarding_complete: boolean; role: "member" | "admin" }>();
+    .single<{ onboarding_complete: boolean; role: "member" | "admin"; suspended_at: string | null }>();
   if (error || !profile) {
     console.error("Proxy could not load the member's profile:", error);
     return null;
@@ -110,6 +116,7 @@ async function getAccess(
     userId,
     onboarded: profile.onboarding_complete,
     role: profile.role === "admin" ? "admin" : "member",
+    suspended: Boolean(profile.suspended_at),
   };
   response.cookies.set(ACCESS_COOKIE, serializeAccess(access), {
     httpOnly: true,

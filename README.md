@@ -133,6 +133,17 @@ where id = (
 );
 ```
 
+Admins can:
+
+- Search members by name or email.
+- Adjust a member's credits, up or down. The change shows in their wallet with the reason.
+- Suspend or unsuspend members. Suspension blocks sign-in at Supabase Auth (this needs `SUPABASE_SERVICE_ROLE_KEY`) and blocks every member action in the database. It hides the member from Explore and cancels their requested and confirmed sessions, refunding learners. Sessions already in progress are left for the admin to resolve.
+- Cancel any open session with a refund, or mark a confirmed or in-progress session complete and pay the teacher.
+- Hide or restore reviews. Hidden reviews don't count towards ratings.
+- Delete announcements.
+
+Every action needs a reason and is recorded in the audit log on the admin page. Admins can't use these tools on their own account or sessions, or on other admins.
+
 Admin access is never granted during public signup. The overview is checked inside a restricted database function as well as the API; the admin role is not writable through profile APIs. To revoke access, set that profile's role back to `member` in the SQL Editor.
 
 ## Development

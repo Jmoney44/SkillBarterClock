@@ -496,3 +496,17 @@ h1 { margin: 7px 0 3px; font-family: var(--font-display), Georgia, serif; font-s
 
 /* Standalone auth cards (account deleted, confirmation error) */
 .auth-shell > .auth-card { width: 100%; max-width: 520px; margin: auto; }
+
+/* Admin tools */
+.admin-search { display: flex; flex-wrap: wrap; gap: 8px; }
+.admin-search input { min-height: 34px; min-width: 220px; padding: 0 10px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
+.admin-row-actions { white-space: nowrap; }
+.admin-row-actions .text-link { display: inline-flex; margin-right: 12px; }
+.admin-row-actions .text-link:last-child { margin-right: 0; }
+.admin-badge-danger { color: #b42318; background: color-mix(in srgb, #b42318 12%, var(--surface)); }
+.admin-dialog-backdrop { position: fixed; z-index: 50; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(20, 30, 28, .45); }
+.admin-dialog { display: grid; width: min(480px, 100%); gap: 12px; padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 20px 50px rgba(0, 0, 0, .2); }
+.admin-dialog h3 { margin: 0; font-size: 18px; }
+.admin-dialog p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.admin-dialog .field-wrap input, .admin-dialog .field-wrap textarea { width: 100%; min-height: 40px; padding: 8px 10px; color: var(--ink); font: inherit; background: var(--paper); border: 1px solid var(--line); border-radius: 7px; }
+.admin-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; }

@@ -6,7 +6,7 @@ import { AppShell, Icon } from "../site";
 
 type WalletTransaction = {
   id: string;
-  kind: "starter" | "hold" | "refund" | "earned";
+  kind: "starter" | "hold" | "refund" | "earned" | "adjustment";
   title: string;
   detail: string;
   amount: number | string;
@@ -125,7 +125,8 @@ export default function WalletPage() {
       <div className="ledger-table">
         <div className="ledger-head"><span>ACTIVITY</span><span>DATE</span><span>AMOUNT</span></div>
         {wallet?.transactions.map((item) => {
-          const isHold = item.kind === "hold";
+          // Holds and admin deductions both reduce available credits.
+          const isHold = item.kind === "hold" || Number(item.amount) < 0;
           return (
             <div className="ledger-row" key={item.id}>
               <span className={`ledger-icon ${isHold ? "hold" : "plus"}`}>
