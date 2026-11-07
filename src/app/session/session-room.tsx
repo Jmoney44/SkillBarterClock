@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AppShell, Avatar, Icon } from "../site";
+import { closedReasonLabel, startAvailability, type ClosedReason } from "@/lib/session-rules";
 
 type SessionStatus = "requested" | "confirmed" | "in_progress" | "completed" | "cancelled";
 type SessionRecord = {
@@ -21,6 +22,7 @@ type SessionRecord = {
   teacher_ended: boolean;
   started_at: string | null;
   ended_at: string | null;
+  closed_reason: ClosedReason | null;
   role: "learner" | "teacher";
   partner_name: string;
   partner_timezone: string;
@@ -69,8 +71,9 @@ export default function SessionRoom({ sessionId }: { sessionId: string }) {
   }, [fetchSession, sessionId]);
 
   useEffect(() => {
-    if (session?.status !== "in_progress") return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    if (session?.status !== "in_progress" && session?.status !== "confirmed") return;
+    // Tick every second for the elapsed clock; every 30s is enough to open the start window.
+    const timer = window.setInterval(() => setNow(Date.now()), session.status === "in_progress" ? 1000 : 30_000);
     return () => window.clearInterval(timer);
   }, [session?.status]);
 
@@ -112,6 +115,8 @@ export default function SessionRoom({ sessionId }: { sessionId: string }) {
   const otherUserStarted = session && (session.role === "learner" ? session.teacher_started : session.learner_started);
   const currentUserEnded = session && (session.role === "learner" ? session.learner_ended : session.teacher_ended);
   const otherUserEnded = session && (session.role === "learner" ? session.teacher_ended : session.learner_ended);
+  const start = session ? startAvailability(session, now) : { canStart: false, hint: "" };
+  const statusText = session ? closedReasonLabel(session.closed_reason) ?? session.status.replace("_", " ") : "";
 
   return (
     <AppShell title="Session room">
@@ -133,7 +138,7 @@ export default function SessionRoom({ sessionId }: { sessionId: string }) {
                 {" · "}{Number(session.duration_hours)} hour{Number(session.duration_hours) === 1 ? "" : "s"}
               </p>
             </div>
-            <span className="room-status"><i />{session.status.replace("_", " ")}</span>
+            <span className="room-status"><i />{statusText}</span>
           </div>
 
           <div className="room-layout">
@@ -144,7 +149,7 @@ export default function SessionRoom({ sessionId }: { sessionId: string }) {
               </div>
               <div className="timer-dial">
                 <div className="timer-face">
-                  <span className="timer-live">{session.status === "in_progress" ? "SESSION IN PROGRESS" : session.status.toUpperCase().replace("_", " ")}</span>
+                  <span className="timer-live">{session.status === "in_progress" ? "SESSION IN PROGRESS" : statusText.toUpperCase()}</span>
                   <strong>{formatElapsed(session.started_at, now)}</strong>
                   <span className="timer-sub">
                     {session.status === "in_progress" ? "Elapsed session time" : "Both partners start the clock"}
@@ -178,10 +183,11 @@ export default function SessionRoom({ sessionId }: { sessionId: string }) {
                   </>
                 )}
                 {session.status === "confirmed" && (
-                  <button className="button button-primary clock-action" type="button" disabled={Boolean(activeAction) || Boolean(currentUserStarted)} onClick={() => void act("start")}>
+                  <button className="button button-primary clock-action" type="button" disabled={Boolean(activeAction) || Boolean(currentUserStarted) || !start.canStart} onClick={() => void act("start")}>
                     {currentUserStarted ? "Waiting for your partner" : "Start session"}
                   </button>
                 )}
+                {session.status === "confirmed" && start.hint && <p className="clock-footnote">{start.hint}</p>}
                 {session.status === "in_progress" && (
                   <button className="button button-primary clock-action" type="button" disabled={Boolean(activeAction) || Boolean(currentUserEnded)} onClick={() => void act("end")}>
                     {currentUserEnded ? "Waiting for your partner to finish" : "End session"}
@@ -192,7 +198,7 @@ export default function SessionRoom({ sessionId }: { sessionId: string }) {
                 )}
               </div>
 
-              <p className="clock-footnote"><Icon name="shield" size={15} /> Both partners need to start and end the clock. Held credits are sent to the teacher after both confirm completion.</p>
+              <p className="clock-footnote"><Icon name="shield" size={15} /> Both partners start the clock from 15 minutes before the scheduled time. If it isn’t started by the scheduled end, the learner’s credits are returned. Held credits go to the teacher once both end the clock, or automatically an hour after the session should have finished.</p>
             </section>
 
             <aside className="room-aside">

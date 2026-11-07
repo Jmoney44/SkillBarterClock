@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { resolveMyStaleSessions } from "@/lib/supabase/sessions";
 import { getProfile } from "@/lib/supabase/profile";
 
 export async function GET() {
@@ -10,6 +11,7 @@ export async function GET() {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
+  await resolveMyStaleSessions(supabase);
   const profile = await getProfile(supabase, user);
   return NextResponse.json({ user: profile });
 }

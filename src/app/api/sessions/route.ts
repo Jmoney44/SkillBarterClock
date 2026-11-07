@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { resolveMyStaleSessions } from "@/lib/supabase/sessions";
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const actions = new Set(["accept", "decline", "start", "end", "cancel"]);
@@ -18,6 +19,7 @@ export async function GET() {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
+  await resolveMyStaleSessions(supabase);
   const { data, error } = await supabase.rpc("get_my_sessions");
   if (error) {
     console.error("Could not load sessions:", error);
@@ -124,6 +126,7 @@ export async function PATCH(request: Request) {
     return badRequestJson("Choose a valid session and action.");
   }
 
+  await resolveMyStaleSessions(supabase);
   const { data: status, error } = await supabase.rpc("act_on_session", {
     p_session_id: sessionId,
     p_action: action as SessionAction,

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { PublicProfile } from "@/lib/supabase/profile";
 import { AppShell, Avatar, Icon } from "../site";
+import { startAvailability } from "@/lib/session-rules";
 
 type TeachingSession = {
   id: string;
@@ -74,6 +75,18 @@ export default function TeacherDashboardPage() {
   const [busySessionId, setBusySessionId] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  // Null until the first client tick, so prerendering never reads the clock.
+  const [now, setNow] = useState<number | null>(null);
+
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    const firstTick = window.setTimeout(tick, 0);
+    const timer = window.setInterval(tick, 30_000);
+    return () => {
+      window.clearTimeout(firstTick);
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     const data = await fetchTeachingData();
@@ -225,17 +238,20 @@ export default function TeacherDashboardPage() {
             </div>
             {upcoming.length ? (
               <div className="teacher-session-list">
-                {upcoming.map((session) => (
+                {upcoming.map((session) => {
+                  const start = startAvailability(session, now);
+                  return (
                   <article className="teacher-session-card" key={session.id}>
                     <Avatar name={session.partner_name} />
                     <div className="teacher-session-main">
                       <div className="teacher-session-title"><b>{session.skill}</b><span className={`admin-badge ${session.status === "in_progress" ? "complete" : ""}`}>{statusLabel(session.status)}</span></div>
                       <span>Learning with {session.partner_name} · {formatDate(session.scheduled_at)}</span>
                       <small>{Number(session.duration_hours)} hour{Number(session.duration_hours) === 1 ? "" : "s"}</small>
+                      {session.status === "confirmed" && start.hint && <small>{start.hint}</small>}
                     </div>
                     <div className="teacher-session-actions">
                       {session.status === "confirmed" && (
-                        <button className="button button-primary small-button" type="button" disabled={busySessionId === session.id} onClick={() => void actOnSession(session.id, "start")}>Start session</button>
+                        <button className="button button-primary small-button" type="button" disabled={busySessionId === session.id || !start.canStart} title={start.hint || undefined} onClick={() => void actOnSession(session.id, "start")}>Start session</button>
                       )}
                       {session.status === "in_progress" && (
                         <button className="button button-primary small-button" type="button" disabled={busySessionId === session.id} onClick={() => void actOnSession(session.id, "end")}>Finish session</button>
@@ -243,7 +259,8 @@ export default function TeacherDashboardPage() {
                       <Link className="button button-secondary small-button" href={`/session?id=${encodeURIComponent(session.id)}`}>Open room</Link>
                     </div>
                   </article>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <div className="teacher-empty-state compact">

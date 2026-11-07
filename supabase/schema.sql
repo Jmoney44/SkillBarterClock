@@ -180,6 +180,21 @@ create index if not exists sessions_learner_created_idx
 create index if not exists sessions_teacher_created_idx
   on public.sessions (teacher_id, created_at desc);
 
+-- Why a session left the active states. Null while the session is still active.
+alter table public.sessions
+  add column if not exists closed_reason text;
+alter table public.sessions
+  drop constraint if exists sessions_closed_reason_check;
+alter table public.sessions
+  add constraint sessions_closed_reason_check check (
+    closed_reason is null
+    or closed_reason in ('declined', 'cancelled', 'expired', 'no_show', 'completed', 'auto_completed')
+  );
+
+create index if not exists sessions_active_scheduled_idx
+  on public.sessions (scheduled_at)
+  where status in ('requested', 'confirmed', 'in_progress');
+
 drop trigger if exists sessions_set_updated_at on public.sessions;
 create trigger sessions_set_updated_at
 before update on public.sessions
@@ -284,7 +299,8 @@ as $$
   limit 100;
 $$;
 
-create or replace function public.get_my_sessions()
+drop function if exists public.get_my_sessions();
+create function public.get_my_sessions()
 returns table (
   id uuid,
   learner_id uuid,
@@ -300,6 +316,7 @@ returns table (
   teacher_ended boolean,
   started_at timestamptz,
   ended_at timestamptz,
+  closed_reason text,
   created_at timestamptz,
   partner_id uuid,
   partner_name text,
@@ -325,6 +342,7 @@ as $$
     s.teacher_ended,
     s.started_at,
     s.ended_at,
+    s.closed_reason,
     s.created_at,
     case when s.learner_id = (select auth.uid()) then s.teacher_id else s.learner_id end,
     p.full_name,
@@ -430,6 +448,200 @@ begin
 end;
 $$;
 
+-- Session timing rules (keep in sync with src/lib/session-rules.ts):
+--   * A request can be accepted only before its scheduled time. An unanswered
+--     request expires at its scheduled time and the learner is refunded.
+--   * A confirmed session can be started from 15 minutes before its scheduled
+--     time until its scheduled end (scheduled_at + duration). If both partners
+--     have not started by then, it closes as a no-show and the learner is refunded.
+--   * A session in progress that is not ended by both partners within one hour
+--     after its expected end (started_at + duration) completes automatically and
+--     the teacher is paid, because both partners confirmed they were present.
+
+-- Returns a requested or confirmed session's held credits to the learner and
+-- closes the session. Internal helper: not callable by clients.
+create or replace function public.release_session_hold(p_session_id uuid, p_reason text)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_session public.sessions%rowtype;
+begin
+  if p_reason is null or p_reason not in ('declined', 'cancelled', 'expired', 'no_show') then
+    raise exception using errcode = '22023', message = 'Choose a valid reason to release session credits.';
+  end if;
+
+  select * into v_session
+  from public.sessions
+  where id = p_session_id
+  for update;
+  if not found or v_session.status not in ('requested', 'confirmed') then
+    raise exception using errcode = '22023', message = 'A session can only be cancelled before it starts.';
+  end if;
+
+  perform p.id
+  from public.profiles p
+  where p.id = v_session.learner_id
+  for update;
+  update public.profiles
+  set credit_balance = credit_balance + v_session.duration_hours,
+      pending_credits = pending_credits - v_session.duration_hours
+  where id = v_session.learner_id
+    and pending_credits >= v_session.duration_hours;
+  if not found then
+    raise exception using errcode = '23514', message = 'Could not release the held session credits.';
+  end if;
+
+  update public.sessions
+  set status = 'cancelled',
+      closed_reason = p_reason
+  where id = p_session_id;
+
+  insert into public.wallet_transactions (user_id, session_id, kind, title, detail, amount)
+  values (
+    v_session.learner_id,
+    p_session_id,
+    'refund',
+    case p_reason
+      when 'declined' then 'Request declined: credits returned'
+      when 'expired' then 'Request expired: credits returned'
+      when 'no_show' then 'Session not started: credits returned'
+      else 'Session credits returned'
+    end,
+    v_session.skill,
+    v_session.duration_hours
+  );
+end;
+$$;
+
+-- Moves a session in progress to completed and pays the teacher from the
+-- learner's held credits. Internal helper: not callable by clients.
+create or replace function public.complete_session(p_session_id uuid, p_reason text)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_session public.sessions%rowtype;
+begin
+  if p_reason is null or p_reason not in ('completed', 'auto_completed') then
+    raise exception using errcode = '22023', message = 'Choose a valid reason to complete a session.';
+  end if;
+
+  select * into v_session
+  from public.sessions
+  where id = p_session_id
+  for update;
+  if not found or v_session.status <> 'in_progress' then
+    raise exception using errcode = '22023', message = 'Only a session in progress can be completed.';
+  end if;
+
+  perform p.id
+  from public.profiles p
+  where p.id in (v_session.learner_id, v_session.teacher_id)
+  order by p.id
+  for update;
+
+  update public.profiles
+  set pending_credits = pending_credits - v_session.duration_hours
+  where id = v_session.learner_id
+    and pending_credits >= v_session.duration_hours;
+  if not found then
+    raise exception using errcode = '23514', message = 'Could not release the held session credits.';
+  end if;
+
+  update public.profiles
+  set credit_balance = credit_balance + v_session.duration_hours
+  where id = v_session.teacher_id;
+
+  update public.sessions
+  set status = 'completed',
+      ended_at = coalesce(ended_at, now()),
+      closed_reason = p_reason
+  where id = p_session_id;
+
+  insert into public.wallet_transactions (user_id, session_id, kind, title, detail, amount)
+  values (
+    v_session.teacher_id,
+    p_session_id,
+    'earned',
+    case when p_reason = 'auto_completed' then 'Session auto-completed' else 'Session completed' end,
+    v_session.skill,
+    v_session.duration_hours
+  );
+end;
+$$;
+
+-- Closes sessions whose time has passed: expires unanswered requests, refunds
+-- confirmed sessions that were never started by both partners, and completes
+-- sessions in progress that were never ended. Pass a user ID to limit it to
+-- that member's sessions. Internal: run by pg_cron or resolve_my_stale_sessions.
+create or replace function public.resolve_stale_sessions(p_user_id uuid default null)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_session record;
+  v_resolved integer := 0;
+begin
+  for v_session in
+    select s.id, s.status
+    from public.sessions s
+    where (p_user_id is null or p_user_id in (s.learner_id, s.teacher_id))
+      and (
+        (s.status = 'requested' and s.scheduled_at <= now())
+        or (
+          s.status = 'confirmed'
+          and s.scheduled_at + (s.duration_hours * interval '1 hour') <= now()
+        )
+        or (
+          s.status = 'in_progress'
+          and coalesce(s.started_at, s.scheduled_at)
+            + (s.duration_hours * interval '1 hour')
+            + interval '1 hour' <= now()
+        )
+      )
+    order by s.id
+    for update skip locked
+  loop
+    begin
+      if v_session.status = 'requested' then
+        perform public.release_session_hold(v_session.id, 'expired');
+      elsif v_session.status = 'confirmed' then
+        perform public.release_session_hold(v_session.id, 'no_show');
+      else
+        perform public.complete_session(v_session.id, 'auto_completed');
+      end if;
+      v_resolved := v_resolved + 1;
+    exception when others then
+      -- Leave this session for the next run instead of blocking the others.
+      raise warning 'Could not resolve stale session %: %', v_session.id, sqlerrm;
+    end;
+  end loop;
+
+  return v_resolved;
+end;
+$$;
+
+create or replace function public.resolve_my_stale_sessions()
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if auth.uid() is null then
+    raise exception using errcode = '28000', message = 'Sign in to manage your sessions.';
+  end if;
+  return public.resolve_stale_sessions(auth.uid());
+end;
+$$;
+
 create or replace function public.act_on_session(p_session_id uuid, p_action text)
 returns text
 language plpgsql
@@ -440,6 +652,8 @@ declare
   v_user_id uuid := auth.uid();
   v_session public.sessions%rowtype;
   v_status text;
+  v_learner_ended boolean;
+  v_teacher_ended boolean;
 begin
   if v_user_id is null then
     raise exception using errcode = '28000', message = 'Sign in to manage a session.';
@@ -456,20 +670,39 @@ begin
     raise exception using errcode = 'P0002', message = 'Session not found.';
   end if;
 
+  if v_session.closed_reason in ('expired', 'no_show') then
+    raise exception using errcode = '22023', message = 'This session closed before it started, so the held credits were returned to the learner.';
+  end if;
+  if v_session.closed_reason = 'auto_completed' then
+    raise exception using errcode = '22023', message = 'This session was completed automatically after its scheduled time.';
+  end if;
+
   if p_action in ('accept', 'decline') then
     if v_user_id <> v_session.teacher_id or v_session.status <> 'requested' then
       raise exception using errcode = '22023', message = 'Only the teacher can respond to a new request.';
     end if;
     if p_action = 'accept' then
+      if v_session.scheduled_at <= now() then
+        raise exception using errcode = '22023', message = 'This request''s scheduled time has passed, so it can no longer be accepted.';
+      end if;
       update public.sessions set status = 'confirmed' where id = p_session_id;
       return 'confirmed';
     end if;
-    p_action := 'cancel';
+    perform public.release_session_hold(p_session_id, 'declined');
+    return 'cancelled';
   end if;
 
   if p_action = 'start' then
     if v_session.status not in ('confirmed', 'in_progress') then
       raise exception using errcode = '22023', message = 'Only a confirmed session can be started.';
+    end if;
+    if v_session.status = 'confirmed' then
+      if now() < v_session.scheduled_at - interval '15 minutes' then
+        raise exception using errcode = '22023', message = 'You can start this session from 15 minutes before its scheduled time.';
+      end if;
+      if now() >= v_session.scheduled_at + (v_session.duration_hours * interval '1 hour') then
+        raise exception using errcode = '22023', message = 'The time for this session has passed, so it can no longer be started.';
+      end if;
     end if;
     update public.sessions
     set learner_started = learner_started or v_user_id = learner_id,
@@ -496,85 +729,20 @@ begin
 
     update public.sessions
     set learner_ended = learner_ended or v_user_id = learner_id,
-        teacher_ended = teacher_ended or v_user_id = teacher_id,
-        status = case
-          when (learner_ended or v_user_id = learner_id)
-            and (teacher_ended or v_user_id = teacher_id) then 'completed'
-          else status
-        end,
-        ended_at = case
-          when (learner_ended or v_user_id = learner_id)
-            and (teacher_ended or v_user_id = teacher_id) then coalesce(ended_at, now())
-          else ended_at
-        end
+        teacher_ended = teacher_ended or v_user_id = teacher_id
     where id = p_session_id
-    returning status into v_status;
+    returning learner_ended, teacher_ended into v_learner_ended, v_teacher_ended;
 
-    if v_status = 'completed' then
-      perform p.id
-      from public.profiles p
-      where p.id in (v_session.learner_id, v_session.teacher_id)
-      order by p.id
-      for update;
-
-      update public.profiles
-      set pending_credits = pending_credits - v_session.duration_hours
-      where id = v_session.learner_id
-        and pending_credits >= v_session.duration_hours;
-      if not found then
-        raise exception using errcode = '23514', message = 'Could not release the held session credits.';
-      end if;
-
-      update public.profiles
-      set credit_balance = credit_balance + v_session.duration_hours
-      where id = v_session.teacher_id;
-
-      insert into public.wallet_transactions (user_id, session_id, kind, title, detail, amount)
-      values (
-        v_session.teacher_id,
-        p_session_id,
-        'earned',
-        'Session completed',
-        v_session.skill,
-        v_session.duration_hours
-      );
+    if v_learner_ended and v_teacher_ended then
+      perform public.complete_session(p_session_id, 'completed');
+      return 'completed';
     end if;
-
-    return v_status;
+    return 'in_progress';
   end if;
 
-  if p_action = 'cancel' then
-    if v_session.status not in ('requested', 'confirmed') then
-      raise exception using errcode = '22023', message = 'A session can only be cancelled before it starts.';
-    end if;
-
-    perform p.id
-    from public.profiles p
-    where p.id = v_session.learner_id
-    for update;
-    update public.profiles
-    set credit_balance = credit_balance + v_session.duration_hours,
-        pending_credits = pending_credits - v_session.duration_hours
-    where id = v_session.learner_id
-      and pending_credits >= v_session.duration_hours;
-    if not found then
-      raise exception using errcode = '23514', message = 'Could not release the held session credits.';
-    end if;
-
-    update public.sessions set status = 'cancelled' where id = p_session_id;
-    insert into public.wallet_transactions (user_id, session_id, kind, title, detail, amount)
-    values (
-      v_session.learner_id,
-      p_session_id,
-      'refund',
-      'Session credits returned',
-      v_session.skill,
-      v_session.duration_hours
-    );
-    return 'cancelled';
-  end if;
-
-  return v_session.status;
+  -- p_action = 'cancel'
+  perform public.release_session_hold(p_session_id, 'cancelled');
+  return 'cancelled';
 end;
 $$;
 
@@ -586,6 +754,28 @@ grant execute on function public.get_public_teachers(uuid) to authenticated;
 grant execute on function public.get_my_sessions() to authenticated;
 grant execute on function public.request_session(uuid, text, timestamptz, numeric, text) to authenticated;
 grant execute on function public.act_on_session(uuid, text) to authenticated;
+
+revoke all on function public.release_session_hold(uuid, text) from public, anon, authenticated;
+revoke all on function public.complete_session(uuid, text) from public, anon, authenticated;
+revoke all on function public.resolve_stale_sessions(uuid) from public, anon, authenticated;
+revoke all on function public.resolve_my_stale_sessions() from public, anon;
+grant execute on function public.resolve_my_stale_sessions() to authenticated;
+
+-- Resolve stale sessions for everyone every 10 minutes when pg_cron is enabled
+-- (Supabase: Database > Integrations > Cron, or Extensions > pg_cron). Without it,
+-- a member's sessions are still resolved whenever they load sessions or wallet.
+do $$
+begin
+  if exists (select 1 from pg_extension where extname = 'pg_cron') then
+    perform cron.unschedule(jobid) from cron.job where jobname = 'resolve-stale-sessions';
+    perform cron.schedule(
+      'resolve-stale-sessions',
+      '*/10 * * * *',
+      'select public.resolve_stale_sessions()'
+    );
+  end if;
+end;
+$$;
 
 create or replace function public.get_admin_overview()
 returns jsonb

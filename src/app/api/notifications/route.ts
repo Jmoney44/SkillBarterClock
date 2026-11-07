@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { resolveMyStaleSessions } from "@/lib/supabase/sessions";
 
 type SessionNotificationSource = {
   id: string;
@@ -25,6 +26,7 @@ export async function GET() {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
+  await resolveMyStaleSessions(supabase);
   const [announcementResult, sessionResult, walletResult] = await Promise.all([
     supabase
       .from("admin_announcements")

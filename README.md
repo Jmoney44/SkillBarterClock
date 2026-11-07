@@ -28,6 +28,14 @@ After applying the schema, the app can list public, onboarding-complete teacher 
 
 The session policy currently requires requests at least one hour ahead and within 90 days, with durations from 30 minutes to 4 hours in 30-minute increments. The app's booking form and database function both enforce these limits.
 
+Held credits never stay stuck. The database enforces these timing rules:
+
+- A teacher can accept a request only before its scheduled time. An unanswered request expires at its scheduled time and the learner's credits are returned.
+- A confirmed session can be started from 15 minutes before its scheduled time until its scheduled end (start time plus duration). If both people have not started it by then, it closes as "not started" and the learner's credits are returned.
+- A session in progress that both people don't end within one hour after its expected finish (actual start plus duration) completes automatically, and the teacher receives the credits.
+
+Overdue sessions are resolved whenever a participant loads their profile, sessions, wallet, or notifications. To also resolve them for members who are not signed in, enable the `pg_cron` extension in Supabase (Database → Extensions) and rerun `supabase/schema.sql`. That schedules `public.resolve_stale_sessions()` every 10 minutes.
+
 The `/teacher` page is the teaching workspace. It shows incoming learner requests, upcoming teaching sessions, scheduled teaching hours, and completed teaching credits. Teachers can accept or decline requests and start or finish sessions from this dashboard.
 
 If you already ran an earlier version of `supabase/schema.sql`, run the updated file again in the Supabase SQL Editor to add the session, wallet, and admin-announcement tables, policies, and functions. The schema is safe to re-run.
