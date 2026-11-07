@@ -62,6 +62,10 @@ The `/teacher` page is the teaching workspace. It shows incoming learner request
 
 If you already ran an earlier version of `supabase/schema.sql`, run the updated file again in the Supabase SQL Editor to add the session, wallet, and admin-announcement tables, policies, and functions. The schema is safe to re-run.
 
+## Weekly availability
+
+Teachers set recurring weekly hours, such as Monday 6:00–9:00 PM, in their own time zone from Teaching → **Set weekly hours** (`/teacher/availability`). When booking a teacher who has hours, learners pick from open half-hour start times shown in the learner's own time zone. Only start times where the chosen length fits are offered, and times taken by the teacher's other sessions are left out. `request_session` rejects times outside a teacher's hours. Teachers who haven't set hours keep the free date-and-time picker, and their requests aren't restricted. Daylight-saving changes are handled through the IANA time zone (for example, 9:00 AM in New York stays 9:00 AM local).
+
 ## Ratings and reviews
 
 After a session is completed, the learner can rate the teacher from 1 to 5 stars and add an optional comment (up to 500 characters) from the session room. There's one review per session, and the learner can edit it for 30 days after the session ends. Teachers see their reviews on the Teaching dashboard. Other members see each teacher's average rating on Explore and the reviews on the teacher's profile, with reviewers shown by first name only. Reviews are written only through the `submit_session_review` database function.

@@ -270,6 +270,66 @@ where not exists (
   where wt.user_id = p.id and wt.kind = 'starter'
 );
 
+-- Weekly availability: recurring windows in the teacher's own IANA time zone.
+-- Teachers with no windows accept requests at any time.
+alter table public.profiles
+  add column if not exists availability_time_zone text;
+
+create table if not exists public.availability_windows (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  weekday smallint not null check (weekday between 0 and 6), -- 0 = Sunday
+  start_minute smallint not null check (start_minute between 0 and 1410 and start_minute % 30 = 0),
+  end_minute smallint not null check (end_minute between 30 and 1440 and end_minute % 30 = 0),
+  check (start_minute < end_minute)
+);
+
+create index if not exists availability_windows_user_weekday_idx
+  on public.availability_windows (user_id, weekday);
+
+alter table public.availability_windows enable row level security;
+
+drop policy if exists "Users can read their availability" on public.availability_windows;
+create policy "Users can read their availability"
+on public.availability_windows for select
+to authenticated
+using ((select auth.uid()) = user_id);
+
+grant select on public.availability_windows to authenticated;
+
+-- Whether every half hour of [p_start, p_end) falls inside one of the
+-- teacher's weekly windows. True when the teacher has set no windows.
+create or replace function public.teacher_is_available(p_teacher_id uuid, p_start timestamptz, p_end timestamptz)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select case
+    when not exists (select 1 from public.availability_windows w where w.user_id = p_teacher_id) then true
+    else not exists (
+      select 1
+      from public.profiles p
+      cross join generate_series(p_start, p_end - interval '30 minutes', interval '30 minutes') as step(t)
+      cross join lateral (
+        select
+          step.t at time zone coalesce(p.availability_time_zone, 'UTC') as local_start,
+          (step.t + interval '30 minutes') at time zone coalesce(p.availability_time_zone, 'UTC') as local_end
+      ) l
+      where p.id = p_teacher_id
+        and not exists (
+          select 1
+          from public.availability_windows w
+          where w.user_id = p_teacher_id
+            and w.weekday = extract(dow from l.local_start)
+            and extract(epoch from (l.local_start - date_trunc('day', l.local_start))) / 60 >= w.start_minute
+            and extract(epoch from (l.local_end - date_trunc('day', l.local_start))) / 60 <= w.end_minute
+        )
+    )
+  end;
+$$;
+
 -- Learners rate teachers after a completed session: one review per session,
 -- editable for 30 days after the session ends. Written only through
 -- submit_session_review; participants can read the review for their session.
@@ -476,6 +536,10 @@ begin
       and btrim(p_skill) = any(p.teaching_skills)
   ) then
     raise exception using errcode = '22023', message = 'That teacher or skill is no longer available.';
+  end if;
+
+  if not public.teacher_is_available(p_teacher_id, p_scheduled_at, p_scheduled_at + (p_duration_hours * interval '1 hour')) then
+    raise exception using errcode = '22023', message = 'That time is outside the teacher''s weekly availability. Choose one of their open times.';
   end if;
 
   for v_lock_user_id in
@@ -930,6 +994,143 @@ as $$
     );
 $$;
 
+-- Replaces the signed-in member's weekly availability. An empty list clears it.
+create or replace function public.set_my_availability(p_time_zone text, p_windows jsonb)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_user_id uuid := auth.uid();
+begin
+  if v_user_id is null then
+    raise exception using errcode = '28000', message = 'Sign in to set your availability.';
+  end if;
+  if p_time_zone is null or not exists (select 1 from pg_catalog.pg_timezone_names where name = p_time_zone) then
+    raise exception using errcode = '22023', message = 'Choose a valid time zone.';
+  end if;
+  if p_windows is null or jsonb_typeof(p_windows) <> 'array' or jsonb_array_length(p_windows) > 42 then
+    raise exception using errcode = '22023', message = 'Add no more than 42 time ranges.';
+  end if;
+
+  if exists (
+    select 1
+    from jsonb_to_recordset(p_windows) as w(weekday int, start_minute int, end_minute int)
+    where w.weekday is null or w.start_minute is null or w.end_minute is null
+      or w.weekday not between 0 and 6
+      or w.start_minute not between 0 and 1410 or w.start_minute % 30 <> 0
+      or w.end_minute not between 30 and 1440 or w.end_minute % 30 <> 0
+      or w.start_minute >= w.end_minute
+  ) then
+    raise exception using errcode = '22023', message = 'Each time range must start before it ends, on the hour or half hour.';
+  end if;
+  if exists (
+    select 1
+    from rows from (jsonb_to_recordset(p_windows) as (weekday int, start_minute int, end_minute int))
+      with ordinality as a(weekday, start_minute, end_minute, n)
+    join rows from (jsonb_to_recordset(p_windows) as (weekday int, start_minute int, end_minute int))
+      with ordinality as b(weekday, start_minute, end_minute, n)
+      on a.weekday = b.weekday
+     and a.n < b.n
+     and a.start_minute < b.end_minute
+     and b.start_minute < a.end_minute
+  ) then
+    raise exception using errcode = '22023', message = 'Time ranges on the same day can''t overlap.';
+  end if;
+
+  delete from public.availability_windows where user_id = v_user_id;
+  insert into public.availability_windows (user_id, weekday, start_minute, end_minute)
+  select v_user_id, w.weekday, w.start_minute, w.end_minute
+  from jsonb_to_recordset(p_windows) as w(weekday int, start_minute int, end_minute int);
+  update public.profiles set availability_time_zone = p_time_zone where id = v_user_id;
+end;
+$$;
+
+-- A member's weekly availability: their own, or a teacher who finished onboarding.
+create or replace function public.get_availability(p_user_id uuid)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select jsonb_build_object(
+    'timeZone', p.availability_time_zone,
+    'windows', coalesce((
+      select jsonb_agg(
+        jsonb_build_object('weekday', w.weekday, 'startMinute', w.start_minute, 'endMinute', w.end_minute)
+        order by w.weekday, w.start_minute
+      )
+      from public.availability_windows w
+      where w.user_id = p.id
+    ), '[]'::jsonb)
+  )
+  from public.profiles p
+  where (select auth.uid()) is not null
+    and p.id = p_user_id
+    and (p.id = (select auth.uid()) or p.onboarding_complete);
+$$;
+
+-- Free half-hour slot starts for a teacher between p_from and p_to (at most 35
+-- days), inside their weekly windows and not overlapping their active sessions.
+-- Only free times are returned, never who the teacher is meeting.
+create or replace function public.get_teacher_open_slots(p_teacher_id uuid, p_from timestamptz, p_to timestamptz)
+returns table (slot_start timestamptz)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  with teacher as (
+    select p.id, coalesce(p.availability_time_zone, 'UTC') as tz
+    from public.profiles p
+    where (select auth.uid()) is not null
+      and p.id = p_teacher_id
+      and p.onboarding_complete
+  ),
+  bounds as (
+    select
+      greatest(coalesce(p_from, now()), now() + interval '1 hour') as lo,
+      least(coalesce(p_to, now()), coalesce(p_from, now()) + interval '35 days', now() + interval '90 days') as hi
+  ),
+  days as (
+    select d::date as d, t.tz
+    from teacher t, bounds b,
+      generate_series(
+        (b.lo at time zone t.tz)::date - 1,
+        (b.hi at time zone t.tz)::date + 1,
+        interval '1 day'
+      ) as d
+  ),
+  occurrences as (
+    select
+      (days.d + make_interval(mins => w.start_minute)) at time zone days.tz as starts_at,
+      (days.d + make_interval(mins => w.end_minute)) at time zone days.tz as ends_at
+    from days
+    join public.availability_windows w
+      on w.user_id = p_teacher_id
+     and w.weekday = extract(dow from days.d)
+  ),
+  slots as (
+    select distinct generate_series(o.starts_at, o.ends_at - interval '30 minutes', interval '30 minutes') as slot_start
+    from occurrences o
+  )
+  select s.slot_start
+  from slots s, bounds b
+  where s.slot_start >= b.lo
+    and s.slot_start + interval '30 minutes' <= b.hi
+    and not exists (
+      select 1
+      from public.sessions x
+      where x.status in ('requested', 'confirmed', 'in_progress')
+        and p_teacher_id in (x.teacher_id, x.learner_id)
+        and x.scheduled_at < s.slot_start + interval '30 minutes'
+        and s.slot_start < x.scheduled_at + (x.duration_hours * interval '1 hour')
+    )
+  order by s.slot_start;
+$$;
+
 -- Lets either participant add or change where they meet until the session ends.
 create or replace function public.set_session_meeting_details(p_session_id uuid, p_meeting_details text)
 returns text
@@ -974,6 +1175,10 @@ revoke all on function public.set_session_meeting_details(uuid, text) from publi
 revoke all on function public.submit_session_review(uuid, integer, text) from public, anon;
 revoke all on function public.get_teacher_reviews(uuid, integer) from public, anon;
 revoke all on function public.get_teacher_rating(uuid) from public, anon;
+revoke all on function public.teacher_is_available(uuid, timestamptz, timestamptz) from public, anon, authenticated;
+revoke all on function public.set_my_availability(text, jsonb) from public, anon;
+revoke all on function public.get_availability(uuid) from public, anon;
+revoke all on function public.get_teacher_open_slots(uuid, timestamptz, timestamptz) from public, anon;
 revoke all on function public.act_on_session(uuid, text) from public, anon;
 grant execute on function public.get_public_teachers(uuid) to authenticated;
 grant execute on function public.get_my_sessions() to authenticated;
@@ -982,6 +1187,9 @@ grant execute on function public.set_session_meeting_details(uuid, text) to auth
 grant execute on function public.submit_session_review(uuid, integer, text) to authenticated;
 grant execute on function public.get_teacher_reviews(uuid, integer) to authenticated;
 grant execute on function public.get_teacher_rating(uuid) to authenticated;
+grant execute on function public.set_my_availability(text, jsonb) to authenticated;
+grant execute on function public.get_availability(uuid) to authenticated;
+grant execute on function public.get_teacher_open_slots(uuid, timestamptz, timestamptz) to authenticated;
 grant execute on function public.act_on_session(uuid, text) to authenticated;
 
 revoke all on function public.release_session_hold(uuid, text) from public, anon, authenticated;

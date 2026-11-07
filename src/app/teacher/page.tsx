@@ -191,7 +191,10 @@ export default function TeacherDashboardPage() {
           <h1>Teaching dashboard</h1>
           <p className="lead">Manage learner requests and keep your exchanges moving.</p>
         </div>
-        <Link href="/profile/edit" className="button button-secondary"><Icon name="settings" size={16} /> Edit teaching profile</Link>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+          <Link href="/teacher/availability" className="button button-primary"><Icon name="calendar" size={16} /> Set weekly hours</Link>
+          <Link href="/profile/edit" className="button button-secondary"><Icon name="settings" size={16} /> Edit teaching profile</Link>
+        </div>
       </div>
 
       {error && <p className="form-error" role="alert">{error}</p>}

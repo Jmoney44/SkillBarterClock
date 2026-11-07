@@ -6,6 +6,9 @@ import { useRouter } from "next/navigation";
 import type { PublicTeacher } from "../../data";
 import { AppShell, Avatar, Icon } from "../../site";
 import { RatingSummary, ReviewList, type TeacherReview } from "../../ratings";
+import { WEEKDAYS, minutesLabel, type Availability } from "@/lib/availability";
+
+const dayOrder = [1, 2, 3, 4, 5, 6, 0];
 
 export default function TeacherProfile({ teacherId }: { teacherId: string }) {
   const router = useRouter();
@@ -14,6 +17,7 @@ export default function TeacherProfile({ teacherId }: { teacherId: string }) {
   const [error, setError] = useState("");
   const [reviews, setReviews] = useState<TeacherReview[]>([]);
   const [reviewsError, setReviewsError] = useState("");
+  const [availability, setAvailability] = useState<Availability | null>(null);
 
   useEffect(() => {
     async function loadTeacher() {
@@ -50,8 +54,18 @@ export default function TeacherProfile({ teacherId }: { teacherId: string }) {
       }
     }
 
+    async function loadAvailability() {
+      try {
+        const response = await fetch(`/api/availability?userId=${encodeURIComponent(teacherId)}`, { cache: "no-store" });
+        if (response.ok) setAvailability(await response.json());
+      } catch {
+        // Weekly hours are optional here; the profile still shows the availability note.
+      }
+    }
+
     void loadTeacher();
     void loadReviews();
+    void loadAvailability();
   }, [router, teacherId]);
 
   return (
@@ -122,6 +136,25 @@ export default function TeacherProfile({ teacherId }: { teacherId: string }) {
               <div className="profile-languages"><b>Languages</b><span>{teacher.languages.join(", ") || "Not specified"}</span></div>
               <div className="profile-languages"><b>Timezone</b><span>{teacher.timezone}</span></div>
               <div className="profile-languages"><b>Availability</b><span>{teacher.availability || "Not specified"}</span></div>
+              {availability?.windows.length ? (
+                <div className="profile-languages">
+                  <b>Weekly hours{availability.timeZone ? ` (${availability.timeZone.replaceAll("_", " ")} time)` : ""}</b>
+                  <ul className="availability-summary">
+                    {dayOrder
+                      .filter((day) => availability.windows.some((window) => window.weekday === day))
+                      .map((day) => (
+                        <li key={day}>
+                          <b>{WEEKDAYS[day]}</b>{" "}
+                          {availability.windows
+                            .filter((window) => window.weekday === day)
+                            .map((window) => `${minutesLabel(window.startMinute)}–${window.endMinute === 1440 ? "midnight" : minutesLabel(window.endMinute)}`)
+                            .join(", ")}
+                        </li>
+                      ))}
+                  </ul>
+                  <small>When you book, open times are shown in your own time zone.</small>
+                </div>
+              ) : null}
             </section>
           </div>
 
